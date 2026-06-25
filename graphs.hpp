@@ -9,6 +9,7 @@ struct Graph {
     std::string name;
     std::vector<float> values; // Значения по оси Y (например, оценка в пешках: +1.5, -2.3)
     sf::Color color;
+    float scalex;
     bool visible = true;
 };
 
@@ -17,14 +18,16 @@ private:
     sf::RenderWindow window;
     std::vector<Graph> graphs;
     sf::Font font;
+    sf::View mainView; // Камера для масштабирования и перемещения
     
     // Настройки интерфейса
     float padding = 60.f;
     int selectedX = -1; // Текущий ход под курсором мыши
+    float zoomFactor = 1.0f; // Текущий уровень зума
 
     // Поиск глобального минимума и максимума для масштабирования Y
     std::pair<float, float> getMinMaxY() {
-        float minY = -5.0f; // Базовые границы (±5 пешек), если данных мало
+        float minY = -5.0f; 
         float maxY = 5.0f;
         bool hasData = false;
 
@@ -40,13 +43,11 @@ private:
                 }
             }
         }
-        // Небольшой запас сверху и снизу
         minY -= 0.5f;
         maxY += 0.5f;
         return {minY, maxY};
     }
 
-    // Поиск максимального количества ходов для масштабирования X
     size_t getMaxXSize() {
         size_t maxSize = 0;
         for (const auto& graph : graphs) {
@@ -58,27 +59,26 @@ private:
     }
 
 public:
-    // Конструктор инициализирует окно и графики
     ChessAnalyticsWindow(const std::vector<Graph>& inputGraphs) : graphs(inputGraphs) {
-        window.create(sf::VideoMode(1000, 600), "Chess Analytics Dashboard");
+        window.create(sf::VideoMode(800, 600), "Chess Analytics Dashboard");
         window.setFramerateLimit(60);
         
-        // Загрузка стандартного шрифта (укажите ваш путь к шрифту .ttf)
+        // Инициализируем камеру размером с окно
+        mainView = window.getDefaultView();
+
         if (!font.loadFromFile("C:/Windows/Fonts/arial.ttf")) {
-            // Если шрифта нет, текст просто не отобразится, но программа не упадет
+            // Шрифта нет — текст не отобразится
         }
     }
 
-    // Проверка, открыто ли окно
     bool isOpen() {
         return window.isOpen();
     }
-    // Возвращает X (индекс хода), на который сейчас наведена мышь
+
     int getSelectedX() const {
         return selectedX;
     }
 
-    // Метод для принудительного переключения X из вашей основной программы
     void setSelectedX(int x) {
         size_t maxMoves = getMaxXSize();
         if (x >= 0 && x < static_cast<int>(maxMoves)) {
@@ -86,7 +86,6 @@ public:
         }
     }
 
-    // Включение/выключение графика по его индексу
     void toggleGraph(size_t index) {
         if (index < graphs.size()) {
             graphs[index].visible = !graphs[index].visible;
@@ -100,38 +99,72 @@ public:
             if (event.type == sf::Event::Closed) {
                 window.close();
             }
-            
-            // Управление видимостью через клавиши 1, 2, 3...
-            if (event.type == sf::Event::KeyPressed) {
+            else if (event.type == sf::Event::KeyPressed) {
                 if (event.key.code >= sf::Keyboard::Num1 && event.key.code <= sf::Keyboard::Num9) {
                     size_t index = event.key.code - sf::Keyboard::Num1;
                     toggleGraph(index);
                 }
+                // Сброс зума по нажатию на колесико / клавишу R
+                if (event.key.code == sf::Keyboard::R) {
+                    mainView = window.getDefaultView();
+                    zoomFactor = 1.0f;
+                }
+            }
+            else if (event.type == sf::Event::Resized) {
+                // Корректно обновляем камеру с сохранением пропорций зума
+                sf::Vector2f center = mainView.getCenter();
+                mainView.setSize(event.size.width * zoomFactor, event.size.height * zoomFactor);
+                mainView.setCenter(center);
+            }
+            // --- Логика приближения/отдаления в точку курсора ---
+            else if (event.type == sf::Event::MouseWheelScrolled) {
+                if (event.mouseWheelScroll.wheel == sf::Mouse::VerticalWheel) {
+                    float zoomRatio = (event.mouseWheelScroll.delta > 0) ? 0.9f : 1.1f;
+                    
+                    // Переводим позицию мыши из пикселей в мировые координаты ДО зума
+                    sf::Vector2i pixelPos(event.mouseWheelScroll.x, event.mouseWheelScroll.y);
+                    sf::Vector2f beforeZoom = window.mapPixelToCoords(pixelPos, mainView);
+
+                    // Применяем зум к камере
+                    mainView.zoom(zoomRatio);
+                    zoomFactor *= zoomRatio;
+
+                    // Переводим ту же позицию мыши в мировые координаты ПОСЛЕ зума
+                    sf::Vector2f afterZoom = window.mapPixelToCoords(pixelPos, mainView);
+
+                    // Сдвигаем камеру на разницу, чтобы точка под курсором осталась на месте
+                    mainView.move(beforeZoom - afterZoom);
+                }
             }
         }
 
-        // Логика отслеживания мыши
-        sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-        sf::Vector2u winSize = window.getSize();
+        // Переводим позицию мыши в координаты игрового мира (с учетом зума)
+        sf::Vector2i mousePixelPos = sf::Mouse::getPosition(window);
+        sf::Vector2f mousePos = window.mapPixelToCoords(mousePixelPos, mainView);
         
-        float graphWidth = winSize.x - 2 * padding;
+        // Базовые размеры окна (не деформированные зумом)
+        sf::Vector2u winSize = window.getSize();
+        float graphWidth = static_cast<float>(winSize.x) - 2 * padding;
         size_t maxMoves = getMaxXSize();
 
+        // Проверка границ теперь работает в мировых координатах
         if (mousePos.x >= padding && mousePos.x <= winSize.x - padding &&
             mousePos.y >= padding && mousePos.y <= winSize.y - padding) {
             
-            // Вычисляем, к какому ходу ближе всего курсор
             float relativeX = mousePos.x - padding;
             float stepX = graphWidth / (maxMoves > 1 ? maxMoves - 1 : 1);
             selectedX = std::round(relativeX / stepX);
             
             if (selectedX >= static_cast<int>(maxMoves)) selectedX = maxMoves - 1;
+            if (selectedX < 0) selectedX = 0;
+        } else {
+            selectedX = -1; // Курсор вне графика
         }
     }
 
     // Отрисовка интерфейса
     void render() {
-        window.clear(sf::Color(30, 30, 30)); // Темный фон
+        window.clear(sf::Color(30, 30, 30));
 
         sf::Vector2u winSize = window.getSize();
         float w = winSize.x;
@@ -143,21 +176,22 @@ public:
         float graphWidth = w - 2 * padding;
         float graphHeight = h - 2 * padding;
 
-        // --- 1. Отрисовка осей и сетки ---
+        // --- РЕНДЕРИНГ ГРАФИКОВ (с зумом) ---
+        window.setView(mainView);
+
+        // Ось X и Y
         sf::VertexArray axes(sf::Lines, 4);
-        // Ось X (ноль оценки, если он попадает в диапазон)
         float zeroY = padding + graphHeight * (maxY / (maxY - minY));
         if (zeroY < padding) zeroY = padding;
         if (zeroY > h - padding) zeroY = h - padding;
 
         axes[0] = sf::Vertex(sf::Vector2f(padding, zeroY), sf::Color(100, 100, 100));
         axes[1] = sf::Vertex(sf::Vector2f(w - padding, zeroY), sf::Color(100, 100, 100));
-        // Ось Y (левая граница)
         axes[2] = sf::Vertex(sf::Vector2f(padding, padding), sf::Color(100, 100, 100));
         axes[3] = sf::Vertex(sf::Vector2f(padding, h - padding), sf::Color(100, 100, 100));
         window.draw(axes);
 
-        // --- 2. Отрисовка графиков ---
+        // Отрисовка графиков
         float stepX = graphWidth / (maxMoves > 1 ? maxMoves - 1 : 1);
         float scaleY = graphHeight / (maxY - minY);
 
@@ -166,22 +200,26 @@ public:
 
             sf::VertexArray line(sf::LineStrip, graph.values.size());
             for (size_t i = 0; i < graph.values.size(); ++i) {
-                float vx = padding + i * stepX;
+                float vx = padding + i * stepX*graph.scalex;
                 float vy = padding + (maxY - graph.values[i]) * scaleY;
                 line[i] = sf::Vertex(sf::Vector2f(vx, vy), graph.color);
             }
             window.draw(line);
         }
 
-        // --- 3. Линия под курсором мыши (Интерактивный маркер) ---
+        // Вертикальный маркер под курсором
         if (selectedX >= 0 && selectedX < static_cast<int>(maxMoves)) {
             float markerX = padding + selectedX * stepX;
             sf::VertexArray verticalLine(sf::Lines, 2);
             verticalLine[0] = sf::Vertex(sf::Vector2f(markerX, padding), sf::Color(255, 255, 255, 100));
             verticalLine[1] = sf::Vertex(sf::Vector2f(markerX, h - padding), sf::Color(255, 255, 255, 100));
             window.draw(verticalLine);
+        }
 
-            // Вывод информации в углу экрана
+        // --- РЕНДЕРИНГ ИНТЕРФЕЙСА (статичный UI без зума) ---
+        window.setView(window.getDefaultView());
+
+        if (selectedX >= 0 && selectedX < static_cast<int>(maxMoves)) {
             sf::Text infoText;
             infoText.setFont(font);
             infoText.setCharacterSize(14);
@@ -192,8 +230,8 @@ public:
             for (size_t i = 0; i < graphs.size(); ++i) {
                 if (!graphs[i].visible) continue;
                 ss << graphs[i].name << " [" << (i + 1) << "]: ";
-                if (selectedX < static_cast<int>(graphs[i].values.size())) {
-                    ss << std::fixed << std::setprecision(2) << graphs[i].values[selectedX];
+                if (selectedX/graphs[i].scalex < static_cast<int>(graphs[i].values.size())) {
+                    ss << std::fixed << std::setprecision(2) << graphs[i].values[selectedX/graphs[i].scalex];
                 } else {
                     ss << "N/A";
                 }
@@ -205,12 +243,11 @@ public:
             window.draw(infoText);
         }
 
-        // Легенда (какие клавиши что отключают)
         sf::Text legendText;
         legendText.setFont(font);
         legendText.setCharacterSize(12);
         legendText.setFillColor(sf::Color(180, 180, 180));
-        legendText.setString("Press 1-9 to toggle graphs. Move mouse to inspect values.");
+        legendText.setString("Scroll to Zoom. Press 'R' to Reset View. Press 1-9 to toggle graphs.");
         legendText.setPosition(padding, h - padding + 10.f);
         window.draw(legendText);
 
