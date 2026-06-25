@@ -1,4 +1,4 @@
-// cd C:/Users/Azerty/Desktop/Программы/filescpp; g++ chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -lsfml-graphics-d -lsfml-window-d -lsfml-system-d -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -static -O3 -fopenmp
+// cd C:/Users/Azerty/Desktop/Программы/filescpp; g++ chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -lsfml-graphics-d -lsfml-window-d -lsfml-system-d -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -O3 -fopenmp -std=c++20
 // cd C:/Users/Azerty/Desktop/Программы/filescpp ; C:\Users\Azerty\AppData\Local\Android\Sdk\ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe --target=x86_64-w64-mingw32 chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -I C:\Users\Azerty\Downloads\mingw64\include -L C:\Users\Azerty\Downloads\mingw64\lib -lsfml-graphics-d -lsfml-window-d -lsfml-system-d -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -static -O3 -ffast-math -ffp-contract=fast -funroll-loops -lwinpthread -fno-exceptions -fno-rtti -std=c++20
 #include <SFML/Graphics.hpp>
 
@@ -292,12 +292,12 @@ struct Board {
     int victory_type = 0; // 0 - нет. 1 - победа белых. 2 - ничья. 3 - победа чёрных
     std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>> history;
     int history_pos = 0;
-    Graph graph_score_white;
-    Graph graph_score_black;
-    Graph graph_score_step_white;
-    Graph graph_score_step_black;
-    Graph graph_max_score_step_white;
-    Graph graph_max_score_step_black;
+    Graph graph_score_white = {"score_white", {}, sf::Color(170, 170, 170), 1};
+    Graph graph_score_black = {"score_black", {}, sf::Color(20, 20, 20), 1};
+    Graph graph_score_step_white = {"score_white_step", {}, sf::Color(150, 150, 150), 2};
+    Graph graph_score_step_black = {"score_black_step", {}, sf::Color(40, 40, 40), 2};
+    Graph graph_max_score_step_white = {"score_white_max_step", {}, sf::Color(130, 130, 130), 2};
+    Graph graph_max_score_step_black = {"score_black_max_step", {}, sf::Color(60, 60, 60), 2};
     std::shared_ptr<std::optional<ChessAnalyticsWindow>> analytics;
     inline std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> get_steps(int x, int y) {
         figure f = board(x, y);
@@ -399,7 +399,7 @@ struct Board {
                 rx = x+size-size_ceil;
             }
             for (int cx = 0; cx!=8; cx++) {
-                sf::Color ceil_color = (((cx + cy) & 1)?sf::Color(118, 150, 86):sf::Color(238, 238, 210));
+                sf::Color ceil_color = (((cx + cy) & 1) ? sf::Color(115, 80, 56) : sf::Color(220, 203, 184));
                 sf::RectangleShape rect;
                 sf::Color colOutLine = sf::Color::White;
                 if (select_ceil.first==cx && select_ceil.second==cy) {
@@ -483,7 +483,9 @@ struct Board {
             if (victory_type==1) txt=L"Победа белых";
             if (victory_type==3) txt=L"Победа чёрных";
             text.setString(txt);
-            text.setFillColor(sf::Color::White);
+            text.setFillColor(sf::Color::Green);
+            if (victory_type==2) text.setFillColor(sf::Color::Yellow);
+            text.setOutlineColor(sf::Color(text.getFillColor().r*0.5f, text.getFillColor().g*0.5f, text.getFillColor().b*0.5f));
 
             unsigned int startSize = 100;
             text.setCharacterSize(startSize);
@@ -491,12 +493,13 @@ struct Board {
             sf::FloatRect textRect = text.getLocalBounds();
 
             if (textRect.width > 0 && textRect.height > 0) {
-                float scaleX = size / textRect.width;
-                float scaleY = size / textRect.height;
+                float scaleX = size*0.8 / textRect.width;
+                float scaleY = size*0.8 / textRect.height;
                 
                 float finalScale = std::min(scaleX, scaleY);
                 
                 unsigned int finalCharSize = static_cast<unsigned int>(startSize * finalScale);
+                text.setOutlineThickness(finalCharSize*0.05);
                 
                 if (finalCharSize < 1) finalCharSize = 1;
                 
@@ -508,6 +511,22 @@ struct Board {
                 float posY = y + (size - textRect.height) / 2.0f - textRect.top;
                 
                 text.setPosition(posX, posY);
+            }
+            window.draw(text);
+        }
+        if (analytics) {
+            (*analytics)->update();
+            (*analytics)->render();
+            if (animations.empty()) {
+                int gx = (*analytics)->getSelectedX();
+                if (history_pos>gx) {
+                    control_z();
+                } else if (history_pos<gx) {
+                    control_shift_z();
+                }
+            }
+            if (!(*analytics)->isOpen()) {
+                analytics.reset();
             }
         }
     }
@@ -574,14 +593,15 @@ struct Board {
                                     auto steps2 = get_steps(cx2, cy2);
                                     for (auto step2: steps2) {
                                         figure fa = board(step2.first, step2.second);
-                                        if (fa.type==figureType::King) {
+                                        if (fa.type==figureType::King && fa.color==!color) {
                                             diw = false;
-                                            goto end_for;
+                                            goto end_for2;
                                         }
                                     }
                                 }
                             }
                         }
+                        end_for2:
                         untake_a_step(data);
                         if (diw) {
                             return 0;
@@ -747,12 +767,27 @@ struct Board {
                                 }
                                 graph_score_white.values.push_back(calc_score(true));
                                 graph_score_black.values.push_back(calc_score(false));
+                                int score_me = calc_score_step(data);
+                                if (abs(score_me)>8000) {
+                                    if (score_me==abs(score_me)) {
+                                        score_me = 40;
+                                    } else {
+                                        score_me = -40;
+                                    }
+                                }
                                 if (ccolor) {
-                                    graph_score_step_white.values.push_back(calc_score_step(data));
+                                    graph_score_step_white.values.push_back(score_me);
                                 } else {
-                                    graph_score_step_black.values.push_back(calc_score_step(data));
+                                    graph_score_step_black.values.push_back(score_me);
                                 }
                                 auto [score, bot_step] = make_move(ccolor, 5);
+                                if (abs(score)>8000) {
+                                    if (score==abs(score)) {
+                                        score = 40;
+                                    } else {
+                                        score = -40;
+                                    }
+                                }
                                 if (ccolor) {
                                     graph_max_score_step_white.values.push_back(score);
                                 } else {
@@ -764,6 +799,10 @@ struct Board {
                                 animations.emplace_back(0.3, select_ceil, step);
                                 history.insert(history.begin()+history_pos, data);
                                 history_pos++;
+
+                                // сбрасываем выделение
+                                select_ceil.first = 255;
+                                select_ceil.second = 255;
 
                                 int end_check_black = check_end(ccolor);
                                 int end_check_white = check_end(!ccolor);
@@ -787,8 +826,6 @@ struct Board {
                                     ccolor = !ccolor;
                                 }
                                 found = true;
-                                select_ceil.first = 255;
-                                select_ceil.second = 255;
                                 
 
                                 if (bot) {
@@ -805,6 +842,13 @@ struct Board {
                                         history.insert(history.begin()+history_pos, bot_data);
                                         history_pos++;
                                         if (!ccolor) {
+                                            if (abs(score)>8000) {
+                                                if (score==abs(score)) {
+                                                    score = 40;
+                                                } else {
+                                                    score = -40;
+                                                }
+                                            }
                                             graph_score_step_white.values.push_back(score);
                                             graph_max_score_step_white.values.push_back(score);
                                         } else {
@@ -846,20 +890,6 @@ struct Board {
                                 select_ceil.second = 255;
                             }
                         }
-                        if (analytics) {
-                            (*analytics)->update();
-                            if (animations.empty()) {
-                                int gx = (*analytics)->getSelectedX();
-                                if (history_pos>gx) {
-                                    control_z();
-                                } else if (history_pos<gx) {
-                                    control_shift_z();
-                                }
-                            }
-                            if (!(*analytics)->isOpen()) {
-                                analytics.reset();
-                            }
-                        }
                     }
                 }
             }
@@ -887,6 +917,8 @@ struct Board {
         }
     }
     void control_z() {
+        select_ceil.first = 255;
+        select_ceil.second = 255;
         int num_steps = -1;
         if (bot && !analytics) num_steps = -2;
         for (int i = 0; i!=abs(num_steps); i++) {
@@ -900,6 +932,8 @@ struct Board {
         }
     }
     void control_shift_z() {
+        select_ceil.first = 255;
+        select_ceil.second = 255;
         int num_steps = -1;
         if (bot && !analytics) num_steps = -2;
         for (int i = 0; i!=abs(num_steps); i++) {
@@ -930,6 +964,8 @@ struct Board {
         graph_max_score_step_white.values.clear();
         graph_max_score_step_black.values.clear();
         victory_type = 0;
+        select_ceil.first = 255;
+        select_ceil.second = 255;
 
         std::string content((std::istreambuf_iterator<char>(file)),
                         std::istreambuf_iterator<char>());
@@ -974,12 +1010,12 @@ struct Board {
                     else if (f.type==figureType::Knight) content += "конь ";
                     else if (f.type==figureType::Pawn) content += "пешка ";
                     else if (f.type==figureType::Bishop) content += "слон ";
-                    else if (f.type==figureType::Rook) content += "ладья ";
+                    else if (f.type==figureType::Rook) content += "лодья ";
                     else {
                         std::cerr << "save error" << std::endl;
                     }
-                    content += std::to_string(cx) + ".0 ";
-                    content += std::to_string(cy) + ".0 ";
+                    content += std::to_string(cx+1) + ".0 ";
+                    content += std::to_string(cy+1) + ".0 ";
                     content += "0.0 ";
                     content += (f.color?"True ": "False ");
                 }
