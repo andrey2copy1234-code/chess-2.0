@@ -320,6 +320,80 @@ int showPromotionWindow(
 
     return selectedIndex;
 }
+std::string* keyToString(sf::Keyboard::Key keyCode) {
+    if (keyCode >= sf::Keyboard::Num0 && keyCode <= sf::Keyboard::Num9) {
+        return new std::string(1, static_cast<char>('0' + (keyCode - sf::Keyboard::Num0)));
+    }
+    return nullptr;
+}
+int getNumber(const std::string& title, const std::string& content, sf::RenderWindow& mainWindow) {
+    sf::VideoMode vidioMode(300, 200);
+    sf::RenderWindow input_window(vidioMode, title);
+    input_window.setFramerateLimit(30);
+
+    sf::Text contentText;
+    contentText.setString(content);
+    contentText.setCharacterSize(std::min(20, (int)(600/content.length())));
+    contentText.setFont(defaultFont);
+    contentText.setPosition(sf::Vector2f(10.f, 10.f));
+    contentText.setFillColor(sf::Color::Black);
+    sf::Text inputText;
+    inputText.setString("Input: ");
+    inputText.setCharacterSize(20);
+    inputText.setPosition(sf::Vector2f(5, 40));
+    inputText.setFont(defaultFont);
+    inputText.setFillColor(sf::Color::Black);
+    std::string input_string = "";
+    sf::Event event;
+    while (input_window.isOpen() && mainWindow.isOpen()) {
+        while (input_window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed) {
+                input_string = "";
+                input_window.close();
+            } else if (event.type == sf::Event::KeyPressed) {
+                if (event.key.code == sf::Keyboard::Enter) {
+                    input_window.close();
+                } else if (event.key.code == sf::Keyboard::BackSpace) {
+                    if (input_string != "") {
+                        input_string.pop_back();
+                        inputText.setString("Input: "+input_string);
+                    }
+                } else if (event.key.code == sf::Keyboard::Subtract) {
+                    input_string += "-";
+                    inputText.setString("Input: "+input_string);
+                }
+                std::string* char_string = keyToString(event.key.code);
+                if (char_string != nullptr) {
+                    std::string string = *char_string;
+                    input_string.append(string);
+                    delete char_string;
+                    inputText.setString("Input: "+input_string);
+                }
+            }
+
+        }
+        while (mainWindow.pollEvent(event)) {
+            if (event.type == sf::Event::Closed) {
+                input_window.close();
+                mainWindow.close();
+            }
+        }
+        input_window.clear(sf::Color::White);
+        input_window.draw(contentText);
+        input_window.draw(inputText);
+        input_window.display();
+        //mainWindow.display();
+    }
+    mainWindow.setActive(true);
+    if (input_string == "") {
+        return -1;
+    }
+    try {
+        return std::stoi(input_string);
+    } catch (std::exception& _) {
+        return -1;
+    }
+}
 const std::vector<figureType> ftcf = {figureType::Queen, figureType::Knight, figureType::Rook, figureType::Bishop};
 struct Board {
     Array2D<figure, 8, 8> board;
@@ -343,6 +417,7 @@ struct Board {
     Graph graph_max_score_step_black = {"score_black_max_step", {}, sf::Color(60, 60, 60), 2};
     std::shared_ptr<std::optional<ChessAnalyticsWindow>> analytics;
     std::optional<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>> hint;
+    int bot_depth = 6;
 
     inline std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> get_steps(int x, int y) {
         figure f = board(x, y);
@@ -407,6 +482,7 @@ struct Board {
             add_diagonal
             return steps;
         }
+        return steps;
     }
     void draw(sf::RenderWindow& window, int x, int y, int size) {
         this->x=x;
@@ -920,7 +996,7 @@ struct Board {
                                     bot_thinking = true;
                                     std::thread th([&]() {
                                         Board board_copy = *this; 
-                                        auto [score, bot_step] = board_copy.make_move(!ccolor);
+                                        auto [score, bot_step] = board_copy.make_move(!ccolor, bot_depth);
                                         std::cout << "score:" << score << std::endl;
                                         std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {bot_step.first.first, bot_step.first.second}};
                                         board(bot_step.first.second.first, bot_step.first.second.second) = bot_step.second;
@@ -1006,6 +1082,11 @@ struct Board {
                     } else {
                         make_move(ccolor);
                     }
+                }
+            } else if (event.key.code == sf::Keyboard::D) {
+                int depth = getNumber("select depth bot", "select depth (current depth "+std::to_string(bot_depth)+")", window);
+                if (depth>0) {
+                    bot_depth = depth;
                 }
             }
         }
@@ -1180,7 +1261,7 @@ std::string getString(const std::string& title, const std::wstring& content, sf:
 }
 std::optional<std::wstring> SaveFileDialog(
     const sf::RenderWindow& window,
-    const std::wstring& filter = L"All Files (*.*)\0*.*\0",
+    const wchar_t* filter = L"All Files (*.*)\0*.*\0",
     const std::wstring& defaultExt = L""
 ) {
     // Буфер на 32768 широких символов (wchar_t) для поддержки Юникода
@@ -1194,7 +1275,7 @@ std::optional<std::wstring> SaveFileDialog(
     ofn.lpstrFile = filePath.data(); 
     ofn.nMaxFile = static_cast<DWORD>(filePath.size());
 
-    ofn.lpstrFilter = filter.c_str();
+    ofn.lpstrFilter = filter;
     ofn.nFilterIndex = 1;
     if (!defaultExt.empty()) {
         ofn.lpstrDefExt = defaultExt.c_str();
@@ -1207,10 +1288,9 @@ std::optional<std::wstring> SaveFileDialog(
 }
 std::optional<std::wstring> OpenFileDialog(
     const sf::RenderWindow& window,
-    const std::wstring& filter = L"All Files (*.*)\0*.*\0"
+    const wchar_t* filter = L"All Files (*.*)\0*.*\0"
 ) {
     std::vector<wchar_t> filePath(32768, L'\0'); 
-    
     HWND hwndOwner = static_cast<HWND>(window.getSystemHandle());
     
     OPENFILENAMEW ofn = {}; 
@@ -1219,15 +1299,10 @@ std::optional<std::wstring> OpenFileDialog(
     ofn.lpstrFile = filePath.data(); 
     ofn.nMaxFile = static_cast<DWORD>(filePath.size());
     
-    // Настройка фильтров файлов
-    ofn.lpstrFilter = filter.c_str();
+    // ПРЯМАЯ ПЕРЕДАЧА УКАЗАТЕЛЯ: Windows сама прочитает двойной нуль в конце
+    ofn.lpstrFilter = filter;
     ofn.nFilterIndex = 1;
     
-    // Флаги безопасности для открытия файла:
-    // OFN_FILEMUSTEXIST  — пользователь не сможет ввести имя несуществующего файла
-    // OFN_PATHMUSTEXIST  — папка обязана существовать
-    // OFN_EXPLORER       — современный интерфейс проводника Windows
-    // OFN_HIDEREADONLY   — скрывает галочку "Только для чтения" (обычно она не нужна)
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY;
     
     if (GetOpenFileNameW(&ofn) == TRUE) { 
@@ -1274,8 +1349,8 @@ int main() {
                         cBoard.loadFromFile(L"./start.txt");
                     } else if (button==1) { // open
                         std::optional<std::wstring> filename = OpenFileDialog(window,  L"Text Files (*.txt)\0*.txt\0"
-                                                                    L"Binary Files (*.bin)\0*.bin\0"
-                                                                    L"All Files (*.*)\0*.*\0");
+              L"Binary Files (*.bin)\0*.bin\0"
+              L"All Files (*.*)\0*.*\0\0");
                         if (filename) {
                             cBoard.loadFromFile(*filename);
                         }
