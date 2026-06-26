@@ -11,6 +11,9 @@
 #include <sstream>
 #include <thread>
 #include <optional>
+#include <windows.h>
+#include <commdlg.h>
+#include <omp.h>
 #include "el_lange/el_alocator.cpp"
 #include "graphs.hpp"
 
@@ -64,18 +67,58 @@ public:
         return anim_time<=left_time;
     }
 };
-enum class figureType: uint8_t {
-    Empty, // ничего
-    King, // король
-    Queen, // ферзь
-    Rook,  // Ладья (как замок)
-    Bishop, // Слон
-    Knight, // конь
-    Pawn // пешка
+struct figureType {
+    // Внутренний тип данных
+    int8_t value;
+
+    // Конструктор для инициализации
+    figureType() = default;
+    constexpr figureType(int8_t v) : value(v) {}
+
+    static const figureType Empty;
+    static const figureType Pawn;
+    static const figureType Knight;
+    static const figureType Bishop;
+    static const figureType Rook;
+    static const figureType Queen;
+    static const figureType King;
+
+    constexpr operator int8_t() const { return abs(value); }
+
+    friend figureType operator+(figureType, figureType) = delete;
+    friend figureType operator-(figureType, figureType) = delete;
+    friend figureType operator*(figureType, figureType) = delete;
+    friend figureType operator/(figureType, figureType) = delete;
+
+    // Операторы сравнения для удобства
+    constexpr bool operator==(const figureType& other) const { return (value==other.value) || (value==-other.value); }
+    constexpr bool operator!=(const figureType& other) const { return !((value==other.value) || (value==-other.value)); }
 };
+inline constexpr figureType figureType::Empty{0};
+inline constexpr figureType figureType::Pawn{1};
+inline constexpr figureType figureType::Knight{3};
+inline constexpr figureType figureType::Bishop{4};
+inline constexpr figureType figureType::Rook{5};
+inline constexpr figureType figureType::Queen{9};
+inline constexpr figureType figureType::King{40};
 struct figure {
     figureType type;
-    bool color; // if true, it's white
+    //bool color; // if true, it's white
+    bool getColor() {
+        return type.value>0;
+    }
+    void setColor(bool color) {
+        if (getColor()!=color) {
+            type.value = -type.value;
+        }
+    }
+    void setType(figureType f) {
+        if (getColor()) {
+            type.value = f.value;
+        } else {
+            type.value = -f.value;
+        }
+    }
 };
 struct Textures_struct {
     sf::Texture King_img;
@@ -299,11 +342,13 @@ struct Board {
     Graph graph_max_score_step_white = {"score_white_max_step", {}, sf::Color(130, 130, 130), 2};
     Graph graph_max_score_step_black = {"score_black_max_step", {}, sf::Color(60, 60, 60), 2};
     std::shared_ptr<std::optional<ChessAnalyticsWindow>> analytics;
+    std::optional<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>> hint;
+
     inline std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> get_steps(int x, int y) {
         figure f = board(x, y);
-        #define add_stepif(x, y, add) if (0<=x && y>=0 && x<8 && y<8 && (board(x, y).type==figureType::Empty || board(x, y).color!=f.color)) {steps.emplace_back(x, y);add}
+        #define add_stepif(x, y, add) if (0<=x && y>=0 && x<8 && y<8 && (board(x, y).type==figureType::Empty || board(x, y).getColor()!=f.getColor())) {steps.emplace_back(x, y);add}
         #define add_stepifna(x, y, add) if (x>=0 && y>=0 && x<8 && y<8 && board(x, y).type==figureType::Empty) {steps.emplace_back(x, y);add}
-        #define add_stepifa(x, y) if (x>=0 && y>=0 && x<8 && y<8 && board(x, y).color!=f.color && board(x, y).type!=figureType::Empty) {steps.emplace_back(x, y);}
+        #define add_stepifa(x, y) if (x>=0 && y>=0 && x<8 && y<8 && board(x, y).getColor()!=f.getColor() && board(x, y).type!=figureType::Empty) {steps.emplace_back(x, y);}
         #define add_lines(...) for (auto step: __VA_ARGS__) {std::pair<int8_t, int8_t> last_pos = {x, y}; while (true) { last_pos.first+=step.first; last_pos.second+=step.second; add_stepif(last_pos.first, last_pos.second, if(board(last_pos.first, last_pos.second).type!=figureType::Empty) {break;}) else {break;}}}
         #define add_diagonal add_lines(std::vector<std::pair<int8_t, int8_t>>{{1, 1}, {-1, 1}, {-1, -1}, {1, -1}})
         #define add_straight add_lines(std::vector<std::pair<int8_t, int8_t>>{{1, 0}, {-1, 0}, {0, 1}, {0, -1}})
@@ -339,10 +384,10 @@ struct Board {
         case figureType::Pawn:
             steps.reserve(4);
             {
-            int step = (f.color?-1:1);
+            int step = (f.getColor()?-1:1);
             int ay = y-step;
             add_stepifa(x-1, ay);
-            add_stepifna(x, ay, if ((y==6 && !f.color) || (y==1 && f.color)) {
+            add_stepifna(x, ay, if ((y==6 && !f.getColor()) || (y==1 && f.getColor())) {
                 add_stepifna(x, y-step-step,);
             });
             add_stepifa(x+1, ay);
@@ -405,9 +450,17 @@ struct Board {
                 if (select_ceil.first==cx && select_ceil.second==cy) {
                     colOutLine = sf::Color::Blue;
                 } else if (std::find(steps.begin(), steps.end(), std::pair<uint8_t, uint8_t>{cx, cy}) != steps.end()) {
-                    colOutLine = sf::Color::Green;
-                    if (board(cx, cy).type!=figureType::Empty && board(cx, cy).color!=ccolor) {
-                        colOutLine = sf::Color::Red;
+                    bool can = true;
+                    auto d = take_a_step(select_ceil, {cx, cy});
+                    if (check_pic(ccolor)) {
+                        can=false;
+                    }
+                    untake_a_step(d);
+                    if (can) {
+                        colOutLine = sf::Color::Green;
+                        if (board(cx, cy).type!=figureType::Empty && board(cx, cy).getColor()!=ccolor) {
+                            colOutLine = sf::Color::Red;
+                        }
                     }
                 }
 
@@ -446,7 +499,7 @@ struct Board {
                     figureR.setTexture(Textures.getTexture(f.type));
                     figureR.setSize(sf::Vector2f(size_ceil, size_ceil));
                     figureR.setPosition(sf::Vector2f(rx, ry));
-                    figureR.setFillColor(f.color?sf::Color::White:sf::Color::Black);
+                    figureR.setFillColor(f.getColor()?sf::Color::White:sf::Color::Black);
                     window.draw(figureR);
                 }   
                 if (!ccolor && !no_rotate_screen) {
@@ -472,7 +525,7 @@ struct Board {
                 pos_ceil.x = size-pos_ceil.x-size_ceil;
             }
             figureR.setPosition(sf::Vector2f(x, y)+pos_ceil);
-            figureR.setFillColor(f.color?sf::Color::White:sf::Color::Black);
+            figureR.setFillColor(f.getColor()?sf::Color::White:sf::Color::Black);
             window.draw(figureR);
         }
         // победный текст
@@ -564,7 +617,7 @@ struct Board {
         for (int cy = 0; cy!=8; cy++) {
             for (int cx = 0; cx!=8; cx++) {
                 figure f = board(cx, cy);
-                if (f.type!=figureType::Empty && f.color==color) {
+                if (f.type!=figureType::Empty && f.getColor()==color) {
                     auto steps = get_steps(cx, cy);
                     for (auto step: steps) {
                         figure fa = board(step.first, step.second);
@@ -581,7 +634,7 @@ struct Board {
         for (int cy = 0; cy!=8; cy++) {
             for (int cx = 0; cx!=8; cx++) {
                 figure f = board(cx, cy);
-                if (f.type!=figureType::Empty && f.color==!color) {
+                if (f.type!=figureType::Empty && f.getColor()==!color) {
                     auto steps = get_steps(cx, cy);
                     for (auto step: steps) {
                         auto data = take_a_step({cx, cy}, step);
@@ -589,11 +642,11 @@ struct Board {
                         for (int cy2 = 0; cy2!=8; cy2++) {
                             for (int cx2 = 0; cx2!=8; cx2++) {
                                 figure f = board(cx2, cy2);
-                                if (f.type!=figureType::Empty && f.color==color) {
+                                if (f.type!=figureType::Empty && f.getColor()==color) {
                                     auto steps2 = get_steps(cx2, cy2);
                                     for (auto step2: steps2) {
                                         figure fa = board(step2.first, step2.second);
-                                        if (fa.type==figureType::King && fa.color==!color) {
+                                        if (fa.type==figureType::King && fa.getColor()==!color) {
                                             diw = false;
                                             goto end_for2;
                                         }
@@ -616,11 +669,26 @@ struct Board {
             return 2;
         }
     }
+    bool check_pic(bool ccolor) {
+        for (int cy = 0; cy!=8; cy++) {
+            for (int cx = 0; cx!=8; cx++) {
+                if (board(cx, cy).getColor()!=ccolor) {
+                    for (auto step: get_steps(cx, cy)) {
+                        figure f = board(step.first, step.second);
+                        if (f.type==figureType::King && f.getColor()==ccolor) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
     bool check_dead(bool color) {
         for (int cy = 0; cy!=8; cy++) {
             for (int cx = 0; cx!=8; cx++) {
                 figure f = board(cx, cy);
-                if (f.type==figureType::King && f.color==color) {
+                if (f.type==figureType::King && f.getColor()==color) {
                     return false;
                 }
             }
@@ -631,51 +699,65 @@ struct Board {
         int score = 0;
         for (int cy = 0; cy!=8; cy++) {
             for (int cx = 0; cx!=8; cx++) {
-                int score_figure = 0;
                 figure f = board(cx, cy);
-                if (f.type==figureType::Pawn) score_figure = 1;
-                else if (f.type==figureType::Rook) score_figure = 3;
-                else if (f.type==figureType::Knight) score_figure = 3;
-                else if (f.type==figureType::Bishop) score_figure = 4;
-                else if (f.type==figureType::Queen) score_figure = 8;
-                if (f.color==color) {
-                    score += score_figure;
-                } else {
-                    score -= score_figure;
-                }
+                if (f.type==figureType::King) continue;
+                score += f.type.value;
             }
+        }
+        if (!color) {
+            score = -score;
         }
         return score;
     }
-    std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> make_move(bool color, int depth = 5, int alpha = -1000000, int beta = 1000000) {
+    #define parallel_if(ysl, copy_path, st, ed, name, ...) if (ysl) [[unlikely]] {\
+        _Pragma("omp parallel for")\
+        for (int pi = 0; pi!=omp_get_max_threads(); pi++) {\
+            copy_path\
+            for (int name = (ed-st)/omp_get_max_threads()*pi; name!=(ed-st)/omp_get_max_threads()*(pi+1);name++) {\
+                __VA_ARGS__\
+            }\
+        }\
+    } else {\
+        for (int name = st; name!=ed; name++) {\
+            __VA_ARGS__\
+        }\
+    }
+    std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> make_move(bool color, int depth = 8, int alpha = -1000000, int beta = 1000000, int score_cache=0) {
         int best_score = -1000000;
         std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> best_step;
-
+        // parallel_if(depth==6, Board board_copy = *this;, 0, 8, cy, 
         for (int cy = 0; cy != 8; cy++) {
             for (int cx = 0; cx != 8; cx++) {
                 figure f = board(cx, cy);
-                if (f.type != figureType::Empty && f.color == color) { // (исправлен цвет)
+                if (f.type != figureType::Empty && f.getColor() == color) { // (исправлен цвет)
                     auto steps = get_steps(cx, cy);
                     for (auto step : steps) {
                         int score = 0;
+                        int new_score_cache = score_cache;
                         bool kill_king = board(step.first, step.second).type == figureType::King;
+                        if (!kill_king) {
+                            new_score_cache += abs(board(step.first, step.second).type.value);
+                        }
                         
                         auto data = take_a_step({cx, cy}, step);
                         bool change_to_pawn = false;
-                        if (f.type==figureType::Pawn && ((step.second==7 && f.color) || (step.second==0 && !f.color))) {
+                        if (f.type==figureType::Pawn && ((step.second==7 && f.getColor()) || (step.second==0 && !f.getColor()))) {
                             change_to_pawn = true;
                         }
                         for (int i = 0; i!=(change_to_pawn?4:1); i++) {
                             if (change_to_pawn) {
-                                board(step.first, step.second).type = ftcf[i];
+                                board(step.first, step.second).setType(ftcf[i]);
+                                new_score_cache += ftcf[i].value-1;
                             }
                             if (kill_king) {
-                                score = 900000 - depth*100 + calc_score(color);
+                                // score = 900000 + depth*100 + calc_score(color);
+                                score = 900000 + depth*100 + new_score_cache;
                             } else {
                                 if (depth == 1) {
-                                    score = calc_score(color);
+                                    //score = calc_score(color);
+                                    score = score_cache;
                                 } else {
-                                    score = -make_move(!color, depth - 1, -beta, -alpha).first;
+                                    score = -make_move(!color, depth - 1, -beta, -alpha, -new_score_cache).first;
                                 }
                             }
                             if (score > best_score) {
@@ -699,7 +781,7 @@ struct Board {
         }
         return {best_score, best_step};
     }
-    int calc_score_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data_step, int depth=7) {
+    int calc_score_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data_step, int depth=6) {
         int score = 0;
         figure f = board(data_step.second.first.first, data_step.second.first.second);
         bool kill_king = board(data_step.second.second.first, data_step.second.second.second).type == figureType::King;
@@ -730,7 +812,7 @@ struct Board {
                 }
                 if (animations.empty() && victory_type==0 && !bot_thinking) {
                     if (select_ceil.first==255) {
-                        if (board(x_click, y_click).type!=figureType::Empty && board(x_click, y_click).color==ccolor) {
+                        if (board(x_click, y_click).type!=figureType::Empty && board(x_click, y_click).getColor()==ccolor) {
                             select_ceil.first = x_click;
                             select_ceil.second = y_click;
                         }
@@ -739,9 +821,15 @@ struct Board {
                         bool found = false;
                         for (auto step: steps) {
                             if (step.first==x_click && step.second==y_click) {
+                                auto d = take_a_step(select_ceil, step);
+                                if (check_pic(ccolor)) {
+                                    untake_a_step(d);
+                                    break;
+                                }
+                                untake_a_step(d);
                                 figure f = board(select_ceil.first, select_ceil.second);
                                 std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data = {{f, {board(step.first, step.second), f}}, {select_ceil, step}};
-                                if (f.type==figureType::Pawn && ((step.second==7 && f.color) || (step.second==0 && !f.color))) {
+                                if (f.type==figureType::Pawn && ((step.second==7 && f.getColor()) || (step.second==0 && !f.getColor()))) {
                                     int select = showPromotionWindow(window, {
                                         {Textures.getTexture(figureType::Queen), L"ферзь"},
                                         {Textures.getTexture(figureType::Knight), L"конь"},
@@ -882,7 +970,7 @@ struct Board {
                             }
                         }
                         if (!found) {
-                            if (board(x_click, y_click).type!=figureType::Empty && board(x_click, y_click).color==ccolor) {
+                            if (board(x_click, y_click).type!=figureType::Empty && board(x_click, y_click).getColor()==ccolor) {
                                 select_ceil.first = x_click;
                                 select_ceil.second = y_click;
                             } else {
@@ -912,6 +1000,12 @@ struct Board {
                             graph_max_score_step_black
                         }
                     );
+                } else if (event.key.alt) {
+                    if (hint) {
+                        hint = std::nullopt;
+                    } else {
+                        make_move(ccolor);
+                    }
                 }
             }
         }
@@ -945,8 +1039,8 @@ struct Board {
             ccolor = !ccolor;
         }
     }
-    void loadFromFile(std::string filename) {
-        std::ifstream file(fs::u8path(filename));
+    void loadFromFile(std::wstring filename) {
+        std::ifstream file(filename.c_str());
         if (!file.is_open()) {
             std::cerr << "error open file!\n";
             return;
@@ -989,13 +1083,13 @@ struct Board {
             int y = std::stoi(words[i+2])-1;
             // color
             bool color = words[i+4]=="True";
-            board(x, y).type = type;
-            board(x, y).color = color;
+            board(x, y).setType(type);
+            board(x, y).setColor(color);
         }
         ccolor = words[words.size()-1]=="True";
     }
-    void saveInFile(std::string filename) {
-        std::ofstream file(fs::u8path(filename));
+    void saveInFile(std::wstring filename) {
+        std::ofstream file(filename.c_str());
         if (!file.is_open()) {
             std::cerr << "error open writen file!\n";
             return;
@@ -1017,7 +1111,7 @@ struct Board {
                     content += std::to_string(cx+1) + ".0 ";
                     content += std::to_string(cy+1) + ".0 ";
                     content += "0.0 ";
-                    content += (f.color?"True ": "False ");
+                    content += (f.getColor()?"True ": "False ");
                 }
             }
         }
@@ -1084,6 +1178,64 @@ std::string getString(const std::string& title, const std::wstring& content, sf:
     mainWindow.setActive(true);
     return input_string;
 }
+std::optional<std::wstring> SaveFileDialog(
+    const sf::RenderWindow& window,
+    const std::wstring& filter = L"All Files (*.*)\0*.*\0",
+    const std::wstring& defaultExt = L""
+) {
+    // Буфер на 32768 широких символов (wchar_t) для поддержки Юникода
+    std::vector<wchar_t> filePath(32768, L'\0'); 
+    
+    HWND hwndOwner = static_cast<HWND>(window.getSystemHandle());
+    
+    OPENFILENAMEW ofn = {}; 
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwndOwner;
+    ofn.lpstrFile = filePath.data(); 
+    ofn.nMaxFile = static_cast<DWORD>(filePath.size());
+
+    ofn.lpstrFilter = filter.c_str();
+    ofn.nFilterIndex = 1;
+    if (!defaultExt.empty()) {
+        ofn.lpstrDefExt = defaultExt.c_str();
+    }
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_EXPLORER;
+    if (GetSaveFileNameW(&ofn) == TRUE) { 
+        return std::wstring(filePath.data()); 
+    }
+    return std::nullopt;
+}
+std::optional<std::wstring> OpenFileDialog(
+    const sf::RenderWindow& window,
+    const std::wstring& filter = L"All Files (*.*)\0*.*\0"
+) {
+    std::vector<wchar_t> filePath(32768, L'\0'); 
+    
+    HWND hwndOwner = static_cast<HWND>(window.getSystemHandle());
+    
+    OPENFILENAMEW ofn = {}; 
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwndOwner;
+    ofn.lpstrFile = filePath.data(); 
+    ofn.nMaxFile = static_cast<DWORD>(filePath.size());
+    
+    // Настройка фильтров файлов
+    ofn.lpstrFilter = filter.c_str();
+    ofn.nFilterIndex = 1;
+    
+    // Флаги безопасности для открытия файла:
+    // OFN_FILEMUSTEXIST  — пользователь не сможет ввести имя несуществующего файла
+    // OFN_PATHMUSTEXIST  — папка обязана существовать
+    // OFN_EXPLORER       — современный интерфейс проводника Windows
+    // OFN_HIDEREADONLY   — скрывает галочку "Только для чтения" (обычно она не нужна)
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_EXPLORER | OFN_HIDEREADONLY;
+    
+    if (GetOpenFileNameW(&ofn) == TRUE) { 
+        return std::wstring(filePath.data()); 
+    }
+    
+    return std::nullopt;
+}
 int main() {
     // try {
         defaultFont.loadFromFile("C:/Windows/Fonts/arial.ttf");
@@ -1094,7 +1246,7 @@ int main() {
         sf::RenderWindow window(vidioMode, "Chess 2.0");
         window.setFramerateLimit(30);
         Board cBoard;
-        cBoard.loadFromFile("./start.txt");
+        cBoard.loadFromFile(L"./start.txt");
         while (window.isOpen()) {
             sf::Event event;
             while (window.pollEvent(event)) {
@@ -1109,17 +1261,31 @@ int main() {
                 } else if (event.type == sf::Event::KeyPressed) {
                     if (event.key.code == sf::Keyboard::B) {
                         cBoard.bot = !cBoard.bot;
+                    } else if (event.key.code == sf::Keyboard::R && cBoard.history_pos!=cBoard.history.size()) {
+                        cBoard.victory_type = 0;
+                    } else if (event.key.code == sf::Keyboard::S) {
+                        cBoard.no_rotate_screen = !cBoard.no_rotate_screen;
                     }
                 } else if (event.type==sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left && (event.mouseButton.y>std::min(width, height) || event.mouseButton.x>std::min(width, height))) {
                     int button;
                     if (height>width) button = ((float)event.mouseButton.x)/width*3;
                     else button = ((float)event.mouseButton.y)/width*3;
                     if (button==0) { // restart
-                        cBoard.loadFromFile("./start.txt");
+                        cBoard.loadFromFile(L"./start.txt");
                     } else if (button==1) { // open
-                        cBoard.loadFromFile(getString("enter filename", L"Введите путь к файлу который хотите открыть", window));
+                        std::optional<std::wstring> filename = OpenFileDialog(window,  L"Text Files (*.txt)\0*.txt\0"
+                                                                    L"Binary Files (*.bin)\0*.bin\0"
+                                                                    L"All Files (*.*)\0*.*\0");
+                        if (filename) {
+                            cBoard.loadFromFile(*filename);
+                        }
                     } else if (button==2) { // save
-                        cBoard.saveInFile(getString("enter filename", L"Введите название файла сохранения", window));
+                        std::optional<std::wstring> filename = SaveFileDialog(window,  L"Text Files (*.txt)\0*.txt\0"
+                                                                    L"Binary Files (*.bin)\0*.bin\0"
+                                                                    L"All Files (*.*)\0*.*\0", L"txt");
+                        if (filename) {
+                            cBoard.saveInFile(*filename);
+                        }
                     }
                 }
             }
