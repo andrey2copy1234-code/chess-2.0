@@ -13,18 +13,25 @@
 #include <optional>
 #include <windows.h>
 #include <commdlg.h>
+#include <array>
 #include <omp.h>
+#include <charconv>
+#include <x86intrin.h>
 #include "el_lange/el_alocator.cpp"
 #include "graphs.hpp"
 
 namespace fs = std::filesystem;
+inline int8_t abs(int8_t x, bool y) {
+    int8_t mask = -static_cast<int8_t>(y); 
+    return (x ^ mask) - mask;
+}
 template <typename T, int sizex, int sizey>
 class Array2D {
 private:
     T data[sizex*sizey];
 public:
     Array2D() = default;
-    T& operator()(int indexx, int indexy) {
+    inline T& operator()(int indexx, int indexy) {
         // if (indexx>=sizex || indexy>=sizey) [[unlikely]] {
         //     std::cerr << "get indexs:" << indexx << "," << indexy << std::endl;
         //     exit(1);
@@ -32,7 +39,7 @@ public:
         return data[indexy*sizex+indexx];
     }
 
-    const T& operator()(int indexx, int indexy) const {
+    inline const T& operator()(int indexx, int indexy) const {
         // if (indexx>=sizex || indexy>=sizey) [[unlikely]] {
         //     std::cerr << "get indexs:" << indexx << "," << indexy << std::endl;
         //     exit(1);
@@ -72,8 +79,24 @@ struct figureType {
     int8_t value;
 
     // Конструктор для инициализации
-    figureType() = default;
+    constexpr figureType() = default;
     constexpr figureType(int8_t v) : value(v) {}
+
+    #ifdef __clang__
+        inline constexpr operator int8_t() const { return value < 0 ? -value : value; }
+    #else
+        // Для GCC оставляем ваш исходный вариант с библиотечным abs
+        inline constexpr operator int8_t() const { return abs(value); }
+    #endif
+
+    friend figureType operator+(figureType, figureType) = delete;
+    friend figureType operator-(figureType, figureType) = delete;
+    friend figureType operator*(figureType, figureType) = delete;
+    friend figureType operator/(figureType, figureType) = delete;
+
+    // Операторы сравнения для удобства
+    inline constexpr bool operator==(const figureType& other) const { return (value==other.value) || (value==-other.value); }
+    inline constexpr bool operator!=(const figureType& other) const { return !((value==other.value) || (value==-other.value)); }
 
     static const figureType Empty;
     static const figureType Pawn;
@@ -82,17 +105,6 @@ struct figureType {
     static const figureType Rook;
     static const figureType Queen;
     static const figureType King;
-
-    constexpr operator int8_t() const { return abs(value); }
-
-    friend figureType operator+(figureType, figureType) = delete;
-    friend figureType operator-(figureType, figureType) = delete;
-    friend figureType operator*(figureType, figureType) = delete;
-    friend figureType operator/(figureType, figureType) = delete;
-
-    // Операторы сравнения для удобства
-    constexpr bool operator==(const figureType& other) const { return (value==other.value) || (value==-other.value); }
-    constexpr bool operator!=(const figureType& other) const { return !((value==other.value) || (value==-other.value)); }
 };
 inline constexpr figureType figureType::Empty{0};
 inline constexpr figureType figureType::Pawn{1};
@@ -104,15 +116,15 @@ inline constexpr figureType figureType::King{40};
 struct figure {
     figureType type;
     //bool color; // if true, it's white
-    bool getColor() {
+    inline bool getColor() {
         return type.value>0;
     }
-    void setColor(bool color) {
+    inline void setColor(bool color) {
         if (getColor()!=color) {
             type.value = -type.value;
         }
     }
-    void setType(figureType f) {
+    inline void setType(figureType f) {
         if (getColor()) {
             type.value = f.value;
         } else {
@@ -127,7 +139,8 @@ struct Textures_struct {
     sf::Texture Bishop_img;
     sf::Texture Knight_img;
     sf::Texture Pawn_img;
-    Textures_struct() {
+    Textures_struct() = default;
+    bool load() {
         if (!King_img.loadFromFile("chess_imgs/King.png") || 
             !Queen_img.loadFromFile("chess_imgs/Queen.png") ||
             !Rook_img.loadFromFile("chess_imgs/Rook.png") ||
@@ -136,7 +149,9 @@ struct Textures_struct {
             !Pawn_img.loadFromFile("chess_imgs/Pawn.png")
         ) {
             std::cerr << "don't found all imgs :(" << std::endl;
+            return false;
         }
+        return true;
     }
     const sf::Texture* getTexture(figureType f) {
         switch (f) {
@@ -388,11 +403,14 @@ int getNumber(const std::string& title, const std::string& content, sf::RenderWi
     if (input_string == "") {
         return -1;
     }
-    try {
-        return std::stoi(input_string);
-    } catch (std::exception& _) {
-        return -1;
+    int result = 0;
+    const char* first = input_string.data();
+    const char* last = first + input_string.size();
+    auto [ptr, ec] = std::from_chars(first, last, result);
+    if (ec == std::errc{} && ptr == last) {
+        return result;
     }
+    return -1;
 }
 const std::vector<figureType> ftcf = {figureType::Queen, figureType::Knight, figureType::Rook, figureType::Bishop};
 struct Board {
@@ -421,12 +439,12 @@ struct Board {
 
     inline std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> get_steps(int x, int y) {
         figure f = board(x, y);
-        #define add_stepif(x, y, add) if (0<=x && y>=0 && x<8 && y<8 && (board(x, y).type==figureType::Empty || board(x, y).getColor()!=f.getColor())) {steps.emplace_back(x, y);add}
-        #define add_stepifna(x, y, add) if (x>=0 && y>=0 && x<8 && y<8 && board(x, y).type==figureType::Empty) {steps.emplace_back(x, y);add}
-        #define add_stepifa(x, y) if (x>=0 && y>=0 && x<8 && y<8 && board(x, y).getColor()!=f.getColor() && board(x, y).type!=figureType::Empty) {steps.emplace_back(x, y);}
-        #define add_lines(...) for (auto step: __VA_ARGS__) {std::pair<int8_t, int8_t> last_pos = {x, y}; while (true) { last_pos.first+=step.first; last_pos.second+=step.second; add_stepif(last_pos.first, last_pos.second, if(board(last_pos.first, last_pos.second).type!=figureType::Empty) {break;}) else {break;}}}
-        #define add_diagonal add_lines(std::vector<std::pair<int8_t, int8_t>>{{1, 1}, {-1, 1}, {-1, -1}, {1, -1}})
-        #define add_straight add_lines(std::vector<std::pair<int8_t, int8_t>>{{1, 0}, {-1, 0}, {0, 1}, {0, -1}})
+        #define add_stepif(x, y, add) if ((uint8_t)(x)<8 && (uint8_t)(y)<8 && (board(x, y).type.value==figureType::Empty.value || board(x, y).getColor()!=f.getColor())) {steps.emplace_back(x, y);add}
+        #define add_stepifna(x, y, add) if ((uint8_t)(x)<8 && (uint8_t)(y)<8 && board(x, y).type.value==figureType::Empty.value) {steps.emplace_back(x, y);add}
+        #define add_stepifa(x, y) if ((uint8_t)(x)<8 && (uint8_t)(y)<8 && board(x, y).getColor()!=f.getColor() && board(x, y).type.value!=figureType::Empty.value) {steps.emplace_back(x, y);}
+        #define add_lines(...) for (auto step: __VA_ARGS__) {std::pair<int8_t, int8_t> last_pos = {x, y}; while (true) { last_pos.first+=step.first; last_pos.second+=step.second; add_stepif(last_pos.first, last_pos.second, if(board(last_pos.first, last_pos.second).type.value!=figureType::Empty.value) {break;}) else {break;}}}
+        #define add_diagonal add_lines(std::array<std::pair<int8_t, int8_t>, 4>{{{-1, -1}, {1, -1}, {-1, 1}, {1, 1}}})
+        #define add_straight add_lines(std::array<std::pair<int8_t, int8_t>, 4>{{{0, -1}, {-1, 0}, {1, 0}, {0, 1}}})
         std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> steps;
         switch (f.type) {
         case figureType::Empty:
@@ -435,14 +453,16 @@ struct Board {
             steps.reserve(8);
             //{{x-1, y-1}, {x, y-1}, {x+1, y-1}, {x+1, y}, {x+1, y+1}, {x, y+1}, {x-1, y+1}, {x-1, y}}
 
-            add_stepif(x-1, y-1,);
-            add_stepif(x, y-1,);
-            add_stepif(x+1, y-1,);
-            add_stepif(x+1, y,);
-            add_stepif(x+1, y+1,);
-            add_stepif(x, y+1,);
-            add_stepif(x-1, y+1,);
-            add_stepif(x-1, y,);
+            add_stepif(x - 1, y - 1, ); // Вперед-влево
+            add_stepif(x,   y - 1, ); // Прямо вперед
+            add_stepif(x + 1, y - 1, ); // Вперед-вправо
+
+            add_stepif(x - 1, y,     ); // Влево
+            add_stepif(x + 1, y,     ); // Вправо
+
+            add_stepif(x - 1, y + 1, ); // Назад-влево
+            add_stepif(x,   y + 1, ); // Прямо назад
+            add_stepif(x + 1, y + 1, ); // Назад-вправо
             return steps;
         case figureType::Knight:
             steps.reserve(8);
@@ -469,15 +489,15 @@ struct Board {
             }
             return steps;
         case figureType::Rook:
-            steps.reserve(10);
+            steps.reserve(14);
             add_straight
             return steps;
         case figureType::Bishop:
-            steps.reserve(11);
+            steps.reserve(13);
             add_diagonal
             return steps;
         case figureType::Queen:
-            steps.reserve(21);
+            steps.reserve(27);
             add_straight
             add_diagonal
             return steps;
@@ -525,6 +545,13 @@ struct Board {
                 sf::Color colOutLine = sf::Color::White;
                 if (select_ceil.first==cx && select_ceil.second==cy) {
                     colOutLine = sf::Color::Blue;
+                    if (hint && hint->second.first.first.first==cx && hint->second.first.first.second==cy) {
+                        colOutLine = sf::Color(89, 19, 82);
+                    }
+                } else if (hint && hint->second.first.first.first==cx && hint->second.first.first.second==cy) {
+                    colOutLine = sf::Color(179, 50, 199);
+                } else if (hint && hint->second.first.second.first==cx && hint->second.first.second.second==cy) {
+                    colOutLine = sf::Color(140, 222, 89);
                 } else if (std::find(steps.begin(), steps.end(), std::pair<uint8_t, uint8_t>{cx, cy}) != steps.end()) {
                     bool can = true;
                     auto d = take_a_step(select_ceil, {cx, cy});
@@ -802,22 +829,30 @@ struct Board {
         int best_score = -1000000;
         std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> best_step;
         // parallel_if(depth==6, Board board_copy = *this;, 0, 8, cy, 
+        // std::vector<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>, LinearPoolAllocator<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>>> steps_all;
+        // steps_all.reserve(32);
+        int8_t valNoMeKing = figureType::King.value;
+        if (color) {
+            valNoMeKing = -valNoMeKing;
+        }
+        bool ncolor = !color;
         for (int cy = 0; cy != 8; cy++) {
             for (int cx = 0; cx != 8; cx++) {
                 figure f = board(cx, cy);
-                if (f.type != figureType::Empty && f.getColor() == color) { // (исправлен цвет)
+                if (f.type.value != figureType::Empty.value && f.getColor() == color) {
                     auto steps = get_steps(cx, cy);
                     for (auto step : steps) {
                         int score = 0;
                         int new_score_cache = score_cache;
-                        bool kill_king = board(step.first, step.second).type == figureType::King;
+                        figure af = board(step.first, step.second);
+                        bool kill_king = af.type.value == valNoMeKing;
                         if (!kill_king) {
-                            new_score_cache += abs(board(step.first, step.second).type.value);
+                            new_score_cache += abs(af.type.value, ncolor);
                         }
                         
                         auto data = take_a_step({cx, cy}, step);
                         bool change_to_pawn = false;
-                        if (f.type==figureType::Pawn && ((step.second==7 && f.getColor()) || (step.second==0 && !f.getColor()))) {
+                        if (f.type==figureType::Pawn && ((step.second==7 && color) || (step.second==0 && ncolor))) {
                             change_to_pawn = true;
                         }
                         for (int i = 0; i!=(change_to_pawn?4:1); i++) {
@@ -831,9 +866,9 @@ struct Board {
                             } else {
                                 if (depth == 1) {
                                     //score = calc_score(color);
-                                    score = score_cache;
+                                    score = new_score_cache;
                                 } else {
-                                    score = -make_move(!color, depth - 1, -beta, -alpha, -new_score_cache).first;
+                                    score = -make_move(ncolor, depth - 1, -beta, -alpha, -new_score_cache).first;
                                 }
                             }
                             if (score > best_score) {
@@ -988,6 +1023,9 @@ struct Board {
                                 }
                                 if (!bot) {
                                     ccolor = !ccolor;
+                                    if (hint) {
+                                        hint = make_move(ccolor, 6);
+                                    }
                                 }
                                 found = true;
                                 
@@ -996,8 +1034,15 @@ struct Board {
                                     bot_thinking = true;
                                     std::thread th([&]() {
                                         Board board_copy = *this; 
+                                        clock_t t = clock();
+                                        unsigned long long start_bars = __rdtsc();
                                         auto [score, bot_step] = board_copy.make_move(!ccolor, bot_depth);
+                                        unsigned long long end_bars = __rdtsc();
+                                        t = clock() - t; // Вычисляем разницу в тактах 
                                         std::cout << "score:" << score << std::endl;
+                                        std::cout << "bars:" << end_bars-start_bars << std::endl;
+                                        std::cout << "steps:" << (end_bars-start_bars)/120 << "-" << (end_bars-start_bars)/100 << std::endl;
+                                        std::cout << "time:" << (double)t / CLOCKS_PER_SEC << " seconds" << std::endl;
                                         std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {bot_step.first.first, bot_step.first.second}};
                                         board(bot_step.first.second.first, bot_step.first.second.second) = bot_step.second;
                                         board(bot_step.first.first.first, bot_step.first.first.second).type = figureType::Empty;
@@ -1005,14 +1050,14 @@ struct Board {
                                         // записываем в историю
                                         history.insert(history.begin()+history_pos, bot_data);
                                         history_pos++;
-                                        if (!ccolor) {
-                                            if (abs(score)>8000) {
-                                                if (score==abs(score)) {
-                                                    score = 40;
-                                                } else {
-                                                    score = -40;
-                                                }
+                                        if (abs(score)>8000) {
+                                            if (score==abs(score)) {
+                                                score = 40;
+                                            } else {
+                                                score = -40;
                                             }
+                                        }
+                                        if (!ccolor) {
                                             graph_score_step_white.values.push_back(score);
                                             graph_max_score_step_white.values.push_back(score);
                                         } else {
@@ -1037,6 +1082,9 @@ struct Board {
                                             victory_type = 2;
                                             ccolor = !ccolor;
                                             return;
+                                        }
+                                        if (hint) {
+                                            hint = make_move(ccolor, 6);
                                         }
                                         bot_thinking = false;
                                     });
@@ -1064,8 +1112,14 @@ struct Board {
                 } else {
                     control_shift_z();
                 }
-            } else if (event.key.code==sf::Keyboard::A && victory_type!=0) {
-                if (!analytics) {
+            } else if (event.key.code==sf::Keyboard::A) {
+                if (event.key.alt) {
+                    if (hint) {
+                        hint = std::nullopt;
+                    } else {
+                        hint = make_move(ccolor, 6);
+                    }
+                } else if (!analytics && victory_type!=0) {
                     analytics = std::make_shared<std::optional<ChessAnalyticsWindow>>(
                         std::vector<Graph>{
                             graph_score_white, 
@@ -1076,12 +1130,6 @@ struct Board {
                             graph_max_score_step_black
                         }
                     );
-                } else if (event.key.alt) {
-                    if (hint) {
-                        hint = std::nullopt;
-                    } else {
-                        make_move(ccolor);
-                    }
                 }
             } else if (event.key.code == sf::Keyboard::D) {
                 int depth = getNumber("select depth bot", "select depth (current depth "+std::to_string(bot_depth)+")", window);
@@ -1104,6 +1152,11 @@ struct Board {
             }
             untake_a_step_anim(history[history_pos]);
             ccolor=!ccolor;
+            if (hint && i+1==abs(num_steps)) {
+                hint = make_move(ccolor, 6);
+            } else {
+                hint = std::nullopt;
+            }
         }
     }
     void control_shift_z() {
@@ -1118,6 +1171,11 @@ struct Board {
             take_a_step_anim(history[history_pos]);
             history_pos++;
             ccolor = !ccolor;
+            if (hint && i+1==abs(num_steps)) {
+                hint = make_move(ccolor, 6);
+            } else {
+                hint = std::nullopt;
+            }
         }
     }
     void loadFromFile(std::wstring filename) {
@@ -1141,6 +1199,7 @@ struct Board {
         victory_type = 0;
         select_ceil.first = 255;
         select_ceil.second = 255;
+        hint = std::nullopt;
 
         std::string content((std::istreambuf_iterator<char>(file)),
                         std::istreambuf_iterator<char>());
@@ -1313,12 +1372,13 @@ std::optional<std::wstring> OpenFileDialog(
 }
 int main() {
     // try {
-        defaultFont.loadFromFile("C:/Windows/Fonts/arial.ttf");
         float width = 600;
         float height = 700;
         sf::VideoMode vidioMode(600, 700);
         sf::View view(sf::FloatRect(0.f, 0.f, 600.f, 700.f));
         sf::RenderWindow window(vidioMode, "Chess 2.0");
+        defaultFont.loadFromFile("C:/Windows/Fonts/arial.ttf");
+        Textures.load();
         window.setFramerateLimit(30);
         Board cBoard;
         cBoard.loadFromFile(L"./start.txt");
