@@ -1,6 +1,7 @@
-// cd C:/Users/Azerty/Desktop/Программы/filescpp; g++ chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -lsfml-graphics-d -lsfml-window-d -lsfml-system-d -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -O3 -fopenmp -std=c++20
-// cd C:/Users/Azerty/Desktop/Программы/filescpp ; C:\Users\Azerty\AppData\Local\Android\Sdk\ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe --target=x86_64-w64-mingw32 chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -I C:\Users\Azerty\Downloads\mingw64\include -L C:\Users\Azerty\Downloads\mingw64\lib -lsfml-graphics-d -lsfml-window-d -lsfml-system-d -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -static -O3 -ffast-math -ffp-contract=fast -funroll-loops -lwinpthread -fno-exceptions -fno-rtti -std=c++20
+// cd C:/Users/Azerty/Desktop/Программы/filescpp; g++ chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -lsfml-graphics -lsfml-window -lsfml-system -lsfml-network -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -lole32 -loleaut32 -O3 -fopenmp -std=c++20
+// cd C:/Users/Azerty/Desktop/Программы/filescpp ; C:\Users\Azerty\AppData\Local\Android\Sdk\ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe --target=x86_64-w64-mingw32 chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -I C:\Users\Azerty\Downloads\mingw64\include -L C:\Users\Azerty\Downloads\mingw64\lib -lsfml-graphics -lsfml-window -lsfml-system -lsfml-network -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -lole32 -loleaut32 -O3 -ffast-math -ffp-contract=fast -funroll-loops -lwinpthread -fno-exceptions -fno-rtti -std=c++20
 #include <SFML/Graphics.hpp>
+#include <SFML/Network.hpp>
 
 #include <algorithm>
 #include <iostream>
@@ -11,14 +12,50 @@
 #include <sstream>
 #include <thread>
 #include <optional>
+#include <variant>
+#include <cstring>
 #include <windows.h>
 #include <commdlg.h>
 #include <array>
 #include <omp.h>
 #include <charconv>
 #include <x86intrin.h>
+#include <comutil.h>
 #include "el_lange/el_alocator.cpp"
 #include "graphs.hpp"
+// --- Универсальное объявление интерфейсов Windows UPnP для Clang и GCC ---
+struct IStaticPortMapping : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE get_ExternalPort(long *pVal) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Protocol(BSTR *pVal) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_InternalPort(long *pVal) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_InternalClient(BSTR *pVal) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Enabled(VARIANT_BOOL *pVal) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Description(BSTR *pVal) = 0;
+};
+
+struct IStaticPortMappingCollection : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE get__NewEnum(IUnknown **pVal) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Item(long lExternalPort, BSTR bstrProtocol, IStaticPortMapping **ppItem) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Count(long *pVal) = 0;
+    virtual HRESULT STDMETHODCALLTYPE Remove(long lExternalPort, BSTR bstrProtocol) = 0;
+    virtual HRESULT STDMETHODCALLTYPE Add(long lExternalPort, BSTR bstrProtocol, long lInternalPort, BSTR bstrInternalClient, VARIANT_BOOL bEnabled, BSTR bstrDescription, IStaticPortMapping **ppStoreMapping) = 0;
+};
+
+struct IUPnPNAT : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE get_StaticPortMappingCollection(IStaticPortMappingCollection **ppPorts) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_DynamicPortMappingCollection(IUnknown **ppPorts) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_NATEventManager(IUnknown **ppManager) = 0;
+};
+
+// Объявляем GUID-ы так, чтобы линкер Clang не выдал "undefined reference"
+#ifdef __cplusplus
+extern "C"{
+#endif
+    const CLSID CLSID_UPnPNAT = {0xB171C812, 0xCC76, 0x4147, {0xAC, 0xB4, 0x4D, 0x14, 0xDD, 0x13, 0x82, 0x24}};
+    const IID IID_IUPnPNAT   = {0xB171C812, 0xCC76, 0x4147, {0xAC, 0xB4, 0x4D, 0x14, 0xDD, 0x13, 0x82, 0x24}};
+#ifdef __cplusplus
+}
+#endif
 
 namespace fs = std::filesystem;
 inline int8_t abs(int8_t x, bool y) {
@@ -133,12 +170,21 @@ struct figure {
     }
 };
 struct Textures_struct {
+    // фигуры
     sf::Texture King_img;
     sf::Texture Queen_img;
     sf::Texture Rook_img;
     sf::Texture Bishop_img;
     sf::Texture Knight_img;
     sf::Texture Pawn_img;
+
+    // иконки режимов игры
+    sf::Texture One_vs_One_img;
+    sf::Texture You_vs_Bot_img;
+    sf::Texture You_vs_Online_Player_img;
+
+    sf::Texture Go_Server_img;
+    sf::Texture Connect_img;
     Textures_struct() = default;
     bool load() {
         if (!King_img.loadFromFile("chess_imgs/King.png") || 
@@ -146,7 +192,14 @@ struct Textures_struct {
             !Rook_img.loadFromFile("chess_imgs/Rook.png") ||
             !Bishop_img.loadFromFile("chess_imgs/Bishop.png") ||
             !Knight_img.loadFromFile("chess_imgs/Knight.png") ||
-            !Pawn_img.loadFromFile("chess_imgs/Pawn.png")
+            !Pawn_img.loadFromFile("chess_imgs/Pawn.png") ||
+            // режимы игры
+            !One_vs_One_img.loadFromFile("chess_imgs/One_vs_One.png") ||
+            !You_vs_Bot_img.loadFromFile("chess_imgs/You_vs_Bot.png") ||
+            !You_vs_Online_Player_img.loadFromFile("chess_imgs/You_vs_Online_Player.png") ||
+
+            !Go_Server_img.loadFromFile("chess_imgs/Go_Server.png") ||
+            !Connect_img.loadFromFile("chess_imgs/Connect.png")
         ) {
             std::cerr << "don't found all imgs :(" << std::endl;
             return false;
@@ -412,15 +465,23 @@ int getNumber(const std::string& title, const std::string& content, sf::RenderWi
     }
     return -1;
 }
+class Board; 
+class NetworkInterface {
+public:
+    virtual ~NetworkInterface() = default;
+    virtual int start(int port) = 0;
+    virtual void listen(Board& board) = 0;
+    virtual void send(const std::vector<uint8_t>& data) = 0;
+};
 const std::vector<figureType> ftcf = {figureType::Queen, figureType::Knight, figureType::Rook, figureType::Bishop};
 struct Board {
     Array2D<figure, 8, 8> board;
+    bool ccolor = true;
     std::vector<Anim> animations;
     int x=0;
     int y=0;
     int size=600;
     std::pair<uint8_t, uint8_t> select_ceil = {-1, -1};
-    bool ccolor = true;
     bool bot = false;
     bool no_rotate_screen = true;
     bool bot_thinking = false;
@@ -436,6 +497,7 @@ struct Board {
     std::shared_ptr<std::optional<ChessAnalyticsWindow>> analytics;
     std::optional<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>> hint;
     int bot_depth = 6;
+    int player_color = -1;
 
     inline std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> get_steps(int x, int y) {
         figure f = board(x, y);
@@ -907,7 +969,7 @@ struct Board {
         untake_a_step(data_step);
         return score;
     }
-    void giveEvent(sf::RenderWindow& window, sf::Event event) {
+    void giveEvent(sf::RenderWindow& window, sf::Event event, std::unique_ptr<NetworkInterface>& connection) {
         if (event.type==sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
             int x_click = event.mouseButton.x;
             int y_click = event.mouseButton.y;
@@ -921,7 +983,7 @@ struct Board {
                     y_click=7-y_click;
                     x_click=7-x_click;
                 }
-                if (animations.empty() && victory_type==0 && !bot_thinking) {
+                if (animations.empty() && victory_type==0 && !bot_thinking && (ccolor==player_color || player_color==-1)) {
                     if (select_ceil.first==255) {
                         if (board(x_click, y_click).type!=figureType::Empty && board(x_click, y_click).getColor()==ccolor) {
                             select_ceil.first = x_click;
@@ -998,6 +1060,11 @@ struct Board {
                                 animations.emplace_back(0.3, select_ceil, step);
                                 history.insert(history.begin()+history_pos, data);
                                 history_pos++;
+                                if (connection!=nullptr) {
+                                    std::vector<uint8_t> send_data(7);
+                                    std::memcpy(send_data.data(), &data, send_data.size());
+                                    connection->send(send_data);
+                                }
 
                                 // сбрасываем выделение
                                 select_ceil.first = 255;
@@ -1106,7 +1173,7 @@ struct Board {
                 }
             }
         } else if (event.type==sf::Event::KeyPressed) {
-            if (event.key.control && event.key.code==sf::Keyboard::Z && animations.empty()) {
+            if (event.key.control && event.key.code==sf::Keyboard::Z && animations.empty() && connection==nullptr) {
                 if (!event.key.shift) {
                     control_z();
                 } else {
@@ -1178,7 +1245,7 @@ struct Board {
             }
         }
     }
-    void loadFromFile(std::wstring filename) {
+    void loadFromFile(std::wstring filename, std::unique_ptr<NetworkInterface>& connection) {
         std::ifstream file(filename.c_str());
         if (!file.is_open()) {
             std::cerr << "error open file!\n";
@@ -1204,6 +1271,13 @@ struct Board {
         std::string content((std::istreambuf_iterator<char>(file)),
                         std::istreambuf_iterator<char>());
         file.close();
+        if (connection!=nullptr) {
+            std::vector<uint8_t> send_data(content.begin(), content.end());
+            connection->send(send_data);
+        }
+        loadFromString(content);
+    }
+    void loadFromString(std::string& content) {
         std::vector<std::string> words = splitBySpaces(content);
         for (int i = 0; i!=words.size()-1; i+=5) {
             // name
@@ -1370,6 +1444,326 @@ std::optional<std::wstring> OpenFileDialog(
     
     return std::nullopt;
 }
+int showWindowChangeGameMode(sf::RenderWindow& window) {
+    int res = showPromotionWindow(window, {{&Textures.One_vs_One_img, L"Игрок против игрока"}, {&Textures.You_vs_Bot_img, L"Игрок против бота"}, {&Textures.You_vs_Online_Player_img, L"Игрок против игрока онлайн"}}, L"Выбор режима игры", L"Выберете режим игры:");
+    if (res==2) {
+        res += showPromotionWindow(window, {{&Textures.Go_Server_img, L"Запустить сервер"}, {&Textures.Connect_img, L"Подключится"}}, L"Подключение", L"Вы хотите подключится или запустить сервер?");
+    }
+    return res;
+}
+class WinApiPortForwarder {
+private:
+    IUPnPNAT* pNat = nullptr;
+    IStaticPortMappingCollection* pMappings = nullptr;
+    bool isPortForwarded = false;
+    long openedPort = 0;
+    BSTR bstrProtocol = nullptr;
+
+public:
+    WinApiPortForwarder() {
+        // Инициализируем COM-компоненты Windows
+        HRESULT hr = CoInitialize(nullptr);
+        if (FAILED(hr)) return;
+
+        hr = CoCreateInstance(CLSID_UPnPNAT, nullptr, CLSCTX_INPROC_SERVER, IID_IUPnPNAT, (void**)&pNat);
+        if (SUCCEEDED(hr) && pNat) {
+            pNat->get_StaticPortMappingCollection(&pMappings);
+        }
+    }
+
+    ~WinApiPortForwarder() {
+        closePort();
+        if (pMappings) pMappings->Release();
+        if (pNat) pNat->Release();
+        CoUninitialize(); // Освобождаем COM
+    }
+
+    bool openPort(int port, const std::string& internalIp) {
+        if (!pMappings) {
+            std::cout << "[WinAPI UPnP] Роутер не поддерживает UPnP или функция отключена." << std::endl;
+            return false;
+        }
+
+        openedPort = port;
+        bstrProtocol = SysAllocString(L"TCP");
+        
+        std::wstring wsIp(internalIp.begin(), internalIp.end());
+        BSTR bstrInternalIp = SysAllocString(wsIp.c_str());
+        BSTR bstrDescription = SysAllocString(L"MyChessGameServer");
+
+        IStaticPortMapping* pMapping = nullptr;
+        HRESULT hr = pMappings->Add(
+            port,               // Внешний порт
+            bstrProtocol,       // Протокол ("TCP")
+            port,               // Внутренний порт
+            bstrInternalIp,     // Внутренний IP вашего ПК (например "192.168.1.50")
+            VARIANT_TRUE,       // Включить правило сразу (True)
+            bstrDescription,    // Описание правила
+            &pMapping           // Ссылка на созданное правило
+        );
+        SysFreeString(bstrInternalIp);
+        SysFreeString(bstrDescription);
+        if (SUCCEEDED(hr)) {
+            std::cout << "[WinAPI UPnP] Успех! Порт " << port << " автоматически открыт через Windows." << std::endl;
+            isPortForwarded = true;
+            if (pMapping) pMapping->Release();
+            return true;
+        }
+        std::cout << "[WinAPI UPnP] Не удалось открыть порт. Код ошибки HRESULT: " << std::hex << hr << std::endl;
+        SysFreeString(bstrProtocol);
+        bstrProtocol = nullptr;
+        return false;
+    }
+
+    void closePort() {
+        if (!isPortForwarded || !pMappings || !bstrProtocol) return;
+        HRESULT hr = pMappings->Remove(openedPort, bstrProtocol);
+        if (SUCCEEDED(hr)) {
+            std::cout << "[WinAPI UPnP] Порт " << openedPort << " успешно закрыт." << std::endl;
+        }
+        
+        SysFreeString(bstrProtocol);
+        bstrProtocol = nullptr;
+        isPortForwarded = false;
+    }
+};
+using namespace std::chrono_literals;
+class Server: public NetworkInterface {
+private:
+    sf::TcpListener listener;
+    sf::TcpSocket clientSocket;
+    WinApiPortForwarder forwarder;
+    bool need_close = false;
+    bool listen_work = false;
+public:
+    Server() = default;
+    virtual ~Server() {
+        if (listen_work) {
+            need_close = true;
+            while (need_close) {
+                std::this_thread::sleep_for(10ms);
+            }
+        }
+    }
+    virtual int start(int port) {
+        std::string myLocalIp = sf::IpAddress::getLocalAddress().toString();
+        forwarder.openPort(port, myLocalIp);
+        if (listener.listen(port) != sf::Socket::Status::Done) {
+            std::cout << "[Server] Error: Cannot listen to port " << port << "\n";
+            return 1;
+        }
+        listener.setBlocking(false); 
+        sf::RenderWindow waitWindow(sf::VideoMode(400, 200), L"Ожидание игрока", sf::Style::Titlebar | sf::Style::Close);
+        waitWindow.setFramerateLimit(60); // Ограничиваем FPS, чтобы не нагружать процессор на 100%
+
+        sf::Text text;
+        text.setFont(defaultFont);
+        text.setString(L"Ожидание присоединения\n    второго игрока...");
+        text.setCharacterSize(20);
+        text.setFillColor(sf::Color::White);
+
+        sf::FloatRect textRect = text.getLocalBounds();
+        text.setOrigin(textRect.left + textRect.width / 2.0f, textRect.top + textRect.height / 2.0f);
+        text.setPosition(sf::Vector2f(400 / 2.0f, 200 / 2.0f));
+
+        while (waitWindow.isOpen()) {
+            sf::Event event;
+            while (waitWindow.pollEvent(event)) {
+                if (event.type == sf::Event::Closed) {
+                    waitWindow.close();
+                    return 2;
+                }
+            }
+
+            if (update() == 1) {
+                waitWindow.close();
+                return 0; 
+            }
+
+            waitWindow.clear(sf::Color(30, 30, 30));
+            waitWindow.draw(text);
+            waitWindow.display();
+        }
+
+        return 2;
+    }
+    int update() {
+        sf::Socket::Status status = listener.accept(clientSocket);
+        if (status == sf::Socket::Status::Done) {
+            std::cout << "[Server] Client connected!\n";
+            clientSocket.setBlocking(false);
+            return 1;
+        } 
+        else if (status == sf::Socket::Status::NotReady) {
+            return 0;
+        } 
+        else {
+            std::cout << "[Server] Error during accept\n";
+            return 2;
+        }
+    }
+    virtual void listen(Board& board) {
+        listen_work = true;
+        std::thread th([this, &board]() {
+            while (true) {
+                sf::Packet packet;
+
+                auto status = clientSocket.receive(packet);
+                if (status == sf::Socket::Status::Done) {
+                    std::vector<uint8_t> buffer;
+                    
+                    buffer.assign(static_cast<const uint8_t*>(packet.getData()), 
+                                static_cast<const uint8_t*>(packet.getData()) + packet.getDataSize());
+                    std::cout << "get:" << " ";
+                    for (uint8_t byte : buffer) {
+                        std::cout << static_cast<int>(byte) << " ";
+                    }
+                    std::cout << std::endl;
+                    if (buffer.size()==7) {
+                        std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> step = *(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>*)buffer.data();
+                        board.take_a_step_anim(step);
+                        board.ccolor = !board.ccolor;
+                    } else {
+                        std::string file_save(buffer.begin(), buffer.end());
+                        board.loadFromString(file_save);
+                    }
+                } else if (status == sf::Socket::Status::Disconnected || status == sf::Socket::Status::Error) {
+                    std::cout << "[Conn] connect stop" << std::endl;
+                    listen_work = false;
+                    break; 
+                }
+                if (need_close) {
+                    need_close = false;
+                    break;
+                }
+                std::this_thread::sleep_for(10ms);
+            }
+            std::cout << "listen end" << std::endl;
+        });
+        th.detach();
+    }
+    virtual void send(const std::vector<uint8_t>& data) {
+        std::cout << "send:" << " ";
+        for (uint8_t byte : data) {
+            std::cout << static_cast<int>(byte) << " ";
+        }
+        std::cout << std::endl;
+
+        sf::Packet packet;
+        for (uint8_t byte : data) {
+            packet << byte;
+        }
+        while (true) {
+            auto status = clientSocket.send(packet);
+            
+            if (status == sf::Socket::Status::Done) {
+                break;
+            }
+            if (status == sf::Socket::Status::NotReady) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue; 
+            }
+            std::cout << "error send" << std::endl;
+            break;
+        }
+    }
+};
+class Client: public NetworkInterface {
+private:
+    sf::TcpSocket serverSocket;
+    sf::IpAddress ip;
+    bool need_close = false;
+    bool listen_work = false;
+public:
+    Client(std::string ip): ip(ip) {};
+    virtual ~Client() {
+        if (listen_work) {
+            need_close = true;
+            while (need_close) {
+                std::this_thread::sleep_for(10ms);
+            }
+        }
+    }
+    virtual int start(int port) {
+        sf::Socket::Status status = serverSocket.connect(ip, static_cast<unsigned short>(port));
+
+        // 2. Проверяем результат подключения
+        if (status == sf::Socket::Status::Done) {
+            std::cout << "connect!" << std::endl;
+            serverSocket.setBlocking(false);
+            return 0; 
+        } else {
+            std::cout << "error connect" << std::endl;
+            return 1; 
+        }
+    }
+    virtual void listen(Board& board) {
+        listen_work = true;
+        std::thread th([this, &board]() {
+            //std::cout << "start listen!" << std::endl;
+            while (true) {
+                sf::Packet packet;
+                auto status = serverSocket.receive(packet);
+                if (status == sf::Socket::Status::Done) {
+                    std::vector<uint8_t> buffer;
+                    
+                    buffer.assign(static_cast<const uint8_t*>(packet.getData()), 
+                                static_cast<const uint8_t*>(packet.getData()) + packet.getDataSize());
+                    std::cout << "get:" << " ";
+                    for (uint8_t byte : buffer) {
+                        std::cout << static_cast<int>(byte) << " ";
+                    }
+                    std::cout << std::endl;
+                    if (buffer.size()==7) {
+                        std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> step = *(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>*)buffer.data();
+                        board.take_a_step_anim(step);
+                        board.ccolor = !board.ccolor;
+                    } else {
+                        std::string file_save(buffer.begin(), buffer.end());
+                        board.loadFromString(file_save);
+                    }
+                } else if (status == sf::Socket::Status::Disconnected || status == sf::Socket::Status::Error) {
+                    std::cout << "[Conn] connect stop" << std::endl;
+                    listen_work = false;
+                    break; 
+                }
+                if (need_close) {
+                    need_close = false;
+                    break;
+                }
+                std::this_thread::sleep_for(10ms);
+            }
+            std::cout << "listen end" << std::endl;
+        });
+        th.detach();
+    }
+    virtual void send(const std::vector<uint8_t>& data) {
+        std::cout << "send:" << " ";
+        for (uint8_t byte : data) {
+            std::cout << static_cast<int>(byte) << " ";
+        }
+        std::cout << std::endl;
+
+        sf::Packet packet;
+        for (uint8_t byte : data) {
+            packet << byte;
+        }
+        while (true) {
+            auto status = serverSocket.send(packet);
+            
+            if (status == sf::Socket::Status::Done) {
+                break;
+            }
+            if (status == sf::Socket::Status::NotReady) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue; 
+            }
+            std::cout << "error send" << std::endl;
+            break;
+        }
+    }
+};
+
 int main() {
     // try {
         float width = 600;
@@ -1381,11 +1775,53 @@ int main() {
         Textures.load();
         window.setFramerateLimit(30);
         Board cBoard;
-        cBoard.loadFromFile(L"./start.txt");
+        std::unique_ptr<NetworkInterface> ptr = nullptr;
+        cBoard.loadFromFile(L"./start.txt", ptr);
+        window.clear(sf::Color::Black);
+        cBoard.draw(window, 0, 0, std::min(width, height));
+        window.display();
+        int res = showWindowChangeGameMode(window);
+        std::unique_ptr<NetworkInterface> connection = nullptr;
+        if (res==0) {
+            cBoard.bot = false;
+            cBoard.player_color = -1;
+            cBoard.loadFromFile(L"./start.txt", ptr);
+            connection = nullptr;
+        } else if (res==1) {
+            cBoard.bot = true;
+            cBoard.player_color = -1;
+            cBoard.loadFromFile(L"./start.txt", ptr);
+            connection = nullptr;
+        } else if (res==2) {
+            cBoard.loadFromFile(L"./start.txt", ptr);
+            connection = std::make_unique<Server>();
+            if (connection->start(8080)==0) {
+                connection->listen(cBoard);
+                cBoard.player_color = 0;
+                std::cout << "server start on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
+                std::cout << "server start on " << sf::IpAddress::getPublicAddress(sf::seconds(3)).toString() << "global address" << std::endl;
+            } else {
+                connection = nullptr;
+            }
+        } else if (res==3) {
+            cBoard.loadFromFile(L"./start.txt", ptr);
+            std::string str = getString("input ip", L"Введите ip сервера", window);
+            sf::IpAddress address(str);
+            bool end = false;
+            if (address == sf::IpAddress::None) {
+                bool end = true; 
+            }
+            if (!end) {
+                connection = std::make_unique<Client>(str);
+                connection->start(8080);
+                connection->listen(cBoard);
+                cBoard.player_color = 1;
+            }
+        }
         while (window.isOpen()) {
             sf::Event event;
             while (window.pollEvent(event)) {
-                cBoard.giveEvent(window, event);
+                cBoard.giveEvent(window, event, connection);
                 if (event.type == sf::Event::Closed) {
                     window.close();
                 } else if (event.type == sf::Event::Resized) {
@@ -1400,19 +1836,57 @@ int main() {
                         cBoard.victory_type = 0;
                     } else if (event.key.code == sf::Keyboard::S) {
                         cBoard.no_rotate_screen = !cBoard.no_rotate_screen;
+                    } else if (event.key.code == sf::Keyboard::M) {
+                        int res = showWindowChangeGameMode(window);
+                        if (res==0) {
+                            cBoard.bot = false;
+                            cBoard.player_color = -1;
+                            cBoard.loadFromFile(L"./start.txt", ptr);
+                            connection = nullptr;
+                        } else if (res==1) {
+                            cBoard.bot = true;
+                            cBoard.player_color = -1;
+                            cBoard.loadFromFile(L"./start.txt", ptr);
+                            connection = nullptr;
+                        } else if (res==2) {
+                            cBoard.loadFromFile(L"./start.txt", ptr);
+                            connection = std::make_unique<Server>();
+                            if (connection->start(8080)==0) {
+                                connection->listen(cBoard);
+                                cBoard.player_color = 0;
+                                std::cout << "server start on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
+                                std::cout << "server start on " << sf::IpAddress::getPublicAddress(sf::seconds(3)).toString() << "global address" << std::endl;
+                            } else {
+                                connection = nullptr;
+                            }
+                        } else if (res==3) {
+                            cBoard.loadFromFile(L"./start.txt", ptr);
+                            std::string str = getString("input ip", L"Введите ip сервера", window);
+                            sf::IpAddress address(str);
+                            bool end = false;
+                            if (address == sf::IpAddress::None) {
+                                bool end = true; 
+                            }
+                            if (!end) {
+                                connection = std::make_unique<Client>(str);
+                                connection->start(8080);
+                                connection->listen(cBoard);
+                                cBoard.player_color = 1;
+                            }
+                        }
                     }
                 } else if (event.type==sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left && (event.mouseButton.y>std::min(width, height) || event.mouseButton.x>std::min(width, height))) {
                     int button;
                     if (height>width) button = ((float)event.mouseButton.x)/width*3;
                     else button = ((float)event.mouseButton.y)/width*3;
                     if (button==0) { // restart
-                        cBoard.loadFromFile(L"./start.txt");
+                        cBoard.loadFromFile(L"./start.txt", connection);
                     } else if (button==1) { // open
                         std::optional<std::wstring> filename = OpenFileDialog(window,  L"Text Files (*.txt)\0*.txt\0"
               L"Binary Files (*.bin)\0*.bin\0"
               L"All Files (*.*)\0*.*\0\0");
                         if (filename) {
-                            cBoard.loadFromFile(*filename);
+                            cBoard.loadFromFile(*filename, connection);
                         }
                     } else if (button==2) { // save
                         std::optional<std::wstring> filename = SaveFileDialog(window,  L"Text Files (*.txt)\0*.txt\0"
