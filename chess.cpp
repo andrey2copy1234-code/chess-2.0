@@ -14,6 +14,7 @@
 #include <optional>
 #include <variant>
 #include <cstring>
+#include <random>
 #include <windows.h>
 #include <commdlg.h>
 #include <array>
@@ -23,8 +24,10 @@
 #include <comutil.h>
 #include "el_lange/el_alocator.cpp"
 #include "graphs.hpp"
+#include "libs/serialize.cpp"
 // --- Универсальное объявление интерфейсов Windows UPnP для Clang и GCC ---
 struct IStaticPortMapping : public IUnknown {
+    virtual ~IStaticPortMapping() = default;
     virtual HRESULT STDMETHODCALLTYPE get_ExternalPort(long *pVal) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_Protocol(BSTR *pVal) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_InternalPort(long *pVal) = 0;
@@ -34,6 +37,7 @@ struct IStaticPortMapping : public IUnknown {
 };
 
 struct IStaticPortMappingCollection : public IUnknown {
+    virtual ~IStaticPortMappingCollection() = default;
     virtual HRESULT STDMETHODCALLTYPE get__NewEnum(IUnknown **pVal) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_Item(long lExternalPort, BSTR bstrProtocol, IStaticPortMapping **ppItem) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_Count(long *pVal) = 0;
@@ -42,6 +46,7 @@ struct IStaticPortMappingCollection : public IUnknown {
 };
 
 struct IUPnPNAT : public IUnknown {
+    virtual ~IUPnPNAT() = default;
     virtual HRESULT STDMETHODCALLTYPE get_StaticPortMappingCollection(IStaticPortMappingCollection **ppPorts) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_DynamicPortMappingCollection(IUnknown **ppPorts) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_NATEventManager(IUnknown **ppManager) = 0;
@@ -69,19 +74,19 @@ private:
 public:
     Array2D() = default;
     inline T& operator()(int indexx, int indexy) {
-        // if (indexx>=sizex || indexy>=sizey) [[unlikely]] {
-        //     std::cerr << "get indexs:" << indexx << "," << indexy << std::endl;
-        //     exit(1);
-        // }
         return data[indexy*sizex+indexx];
     }
 
     inline const T& operator()(int indexx, int indexy) const {
-        // if (indexx>=sizex || indexy>=sizey) [[unlikely]] {
-        //     std::cerr << "get indexs:" << indexx << "," << indexy << std::endl;
-        //     exit(1);
-        // }
         return data[indexy*sizex+indexx];
+    }
+
+    inline T& operator()(int indexx) {
+        return data[indexx];
+    }
+
+    inline const T& operator()(int indexx) const {
+        return data[indexx];
     }
 };
 class Anim {
@@ -119,12 +124,15 @@ struct figureType {
     constexpr figureType() = default;
     constexpr figureType(int8_t v) : value(v) {}
 
-    #ifdef __clang__
-        inline constexpr operator int8_t() const { return value < 0 ? -value : value; }
-    #else
-        // Для GCC оставляем ваш исходный вариант с библиотечным abs
-        inline constexpr operator int8_t() const { return abs(value); }
-    #endif
+    // #ifdef __clang__
+    //     inline constexpr operator int8_t() const { return value < 0 ? -value : value; }
+    // #else
+    //     // Для GCC оставляем ваш исходный вариант с библиотечным abs
+    //     inline constexpr operator int8_t() const { return abs(value); }
+    // #endif
+    // inline constexpr operator int8_t() const { 
+    //     return (value ^ (value >> 7)) - (value >> 7); 
+    // }
 
     friend figureType operator+(figureType, figureType) = delete;
     friend figureType operator-(figureType, figureType) = delete;
@@ -134,6 +142,12 @@ struct figureType {
     // Операторы сравнения для удобства
     inline constexpr bool operator==(const figureType& other) const { return (value==other.value) || (value==-other.value); }
     inline constexpr bool operator!=(const figureType& other) const { return !((value==other.value) || (value==-other.value)); }
+    // inline constexpr bool operator==(const figureType& other) const { 
+    //     return static_cast<int8_t>(*this) == static_cast<int8_t>(other); 
+    // }
+    // inline constexpr bool operator!=(const figureType& other) const { 
+    //     return static_cast<int8_t>(*this) != static_cast<int8_t>(other); 
+    // }
 
     static const figureType Empty;
     static const figureType Pawn;
@@ -149,7 +163,7 @@ inline constexpr figureType figureType::Knight{3};
 inline constexpr figureType figureType::Bishop{4};
 inline constexpr figureType figureType::Rook{5};
 inline constexpr figureType figureType::Queen{9};
-inline constexpr figureType figureType::King{40};
+inline constexpr figureType figureType::King{8}; // ценность короля неправельная чтобы таблица переходов меньше была
 struct figure {
     figureType type;
     //bool color; // if true, it's white
@@ -207,20 +221,20 @@ struct Textures_struct {
         return true;
     }
     const sf::Texture* getTexture(figureType f) {
-        switch (f) {
-        case figureType::Empty:
+        switch (abs(f.value)) {
+        case figureType::Empty.value:
             return &Pawn_img;
-        case figureType::King:
+        case figureType::King.value:
             return &King_img;
-        case figureType::Queen:
+        case figureType::Queen.value:
             return &Queen_img;
-        case figureType::Rook:
+        case figureType::Rook.value:
             return &Rook_img;
-        case figureType::Bishop:
+        case figureType::Bishop.value:
             return &Bishop_img;
-        case figureType::Knight:
+        case figureType::Knight.value:
             return &Knight_img;
-        case figureType::Pawn:
+        case figureType::Pawn.value:
             return &Pawn_img;
         }
     }
@@ -473,6 +487,10 @@ public:
     virtual void listen(Board& board) = 0;
     virtual void send(const std::vector<uint8_t>& data) = 0;
 };
+int get_random(int a, int b) {
+    static std::mt19937 g(std::random_device{}());
+    return std::uniform_int_distribution<int>{a, b}(g);
+}
 const std::vector<figureType> ftcf = {figureType::Queen, figureType::Knight, figureType::Rook, figureType::Bishop};
 struct Board {
     Array2D<figure, 8, 8> board;
@@ -500,18 +518,37 @@ struct Board {
     int player_color = -1;
 
     inline std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> get_steps(int x, int y) {
+    //inline std::vector<std::pair<uint8_t, uint8_t>> get_steps(int x, int y) {
         figure f = board(x, y);
-        #define add_stepif(x, y, add) if ((uint8_t)(x)<8 && (uint8_t)(y)<8 && (board(x, y).type.value==figureType::Empty.value || board(x, y).getColor()!=f.getColor())) {steps.emplace_back(x, y);add}
+        bool mcolor = f.getColor();
+        #define add_stepif(x, y, add) if ((uint8_t)(x)<8 && (uint8_t)(y)<8 && (board(x, y).type.value==figureType::Empty.value || board(x, y).getColor()!=mcolor)) {steps.emplace_back(x, y);add}
         #define add_stepifna(x, y, add) if ((uint8_t)(x)<8 && (uint8_t)(y)<8 && board(x, y).type.value==figureType::Empty.value) {steps.emplace_back(x, y);add}
-        #define add_stepifa(x, y) if ((uint8_t)(x)<8 && (uint8_t)(y)<8 && board(x, y).getColor()!=f.getColor() && board(x, y).type.value!=figureType::Empty.value) {steps.emplace_back(x, y);}
-        #define add_lines(...) for (auto step: __VA_ARGS__) {std::pair<int8_t, int8_t> last_pos = {x, y}; while (true) { last_pos.first+=step.first; last_pos.second+=step.second; add_stepif(last_pos.first, last_pos.second, if(board(last_pos.first, last_pos.second).type.value!=figureType::Empty.value) {break;}) else {break;}}}
+        #define add_stepifa(x, y) if ((uint8_t)(x)<8 && (uint8_t)(y)<8 && board(x, y).getColor()!=mcolor && board(x, y).type.value!=figureType::Empty.value) {steps.emplace_back(x, y);}
+        #define add_lines(...) for (auto step: __VA_ARGS__) {\
+            std::pair<int8_t, int8_t> last_pos = {x, y};\
+            while (true) {\
+                last_pos.first+=step.first;\
+                last_pos.second+=step.second;\
+                if ((uint8_t)last_pos.first>=8 || (uint8_t)last_pos.second>=8) break;\
+                figure af = board(last_pos.first, last_pos.second);\
+                if (af.type.value!=figureType::Empty.value) {\
+                    if (mcolor==af.getColor()) break;\
+                    steps.push_back(last_pos);\
+                    break;\
+                }\
+                steps.emplace_back(last_pos.first, last_pos.second);\
+            }\
+        }
+        //add_stepif(last_pos.first, last_pos.second, if(board(last_pos.first, last_pos.second).type.value!=figureType::Empty.value) {break;}) else {break;}}}
+
         #define add_diagonal add_lines(std::array<std::pair<int8_t, int8_t>, 4>{{{-1, -1}, {1, -1}, {-1, 1}, {1, 1}}})
         #define add_straight add_lines(std::array<std::pair<int8_t, int8_t>, 4>{{{0, -1}, {-1, 0}, {1, 0}, {0, 1}}})
         std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> steps;
-        switch (f.type) {
-        case figureType::Empty:
+        //std::vector<std::pair<uint8_t, uint8_t>> steps;
+        switch (abs(f.type.value, !mcolor)) {
+        case figureType::Empty.value:
             return steps;
-        case figureType::King:
+        case figureType::King.value:
             steps.reserve(8);
             //{{x-1, y-1}, {x, y-1}, {x+1, y-1}, {x+1, y}, {x+1, y+1}, {x, y+1}, {x-1, y+1}, {x-1, y}}
 
@@ -526,7 +563,7 @@ struct Board {
             add_stepif(x,   y + 1, ); // Прямо назад
             add_stepif(x + 1, y + 1, ); // Назад-вправо
             return steps;
-        case figureType::Knight:
+        case figureType::Knight.value:
             steps.reserve(8);
             
             add_stepif(x - 1, y - 2,);
@@ -538,27 +575,29 @@ struct Board {
             add_stepif(x - 1, y + 2,);
             add_stepif(x + 1, y + 2,);
             return steps;
-        case figureType::Pawn:
+        case figureType::Pawn.value:
             steps.reserve(4);
             {
-            int step = (f.getColor()?-1:1);
+            int step = (mcolor?-1:1);
             int ay = y-step;
+            //add_stepifa(x-1, ay) else if ((x-1)>0 && ((ay==3 && f.getColor()) || (ay==4 && !f.getColor())) && can_capture_on_way(x-1, (int)f.getColor())) steps.emplace_back(x-1, ay);
             add_stepifa(x-1, ay);
             add_stepifna(x, ay, if ((y==6 && !f.getColor()) || (y==1 && f.getColor())) {
                 add_stepifna(x, y-step-step,);
             });
+            //add_stepifa(x+1, ay) else if ((x+1)<8 && ((ay==3 && f.getColor()) || (ay==4 && !f.getColor())) && can_capture_on_way(x+1, (int)f.getColor())) steps.emplace_back(x+1, ay);
             add_stepifa(x+1, ay);
             }
             return steps;
-        case figureType::Rook:
+        case figureType::Rook.value:
             steps.reserve(14);
             add_straight
             return steps;
-        case figureType::Bishop:
+        case figureType::Bishop.value:
             steps.reserve(13);
             add_diagonal
             return steps;
-        case figureType::Queen:
+        case figureType::Queen.value:
             steps.reserve(27);
             add_straight
             add_diagonal
@@ -589,10 +628,22 @@ struct Board {
             }
         }
         std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> steps;
+        //std::vector<std::pair<uint8_t, uint8_t>> steps;
         if (select_ceil.first!=255) {
             steps = get_steps(select_ceil.first, select_ceil.second);
         }
         float size_ceil = size*0.125f;
+        sf::RectangleShape square;
+        square.setSize(sf::Vector2f(size, size));
+        square.setPosition(sf::Vector2f(x, y));
+        square.setFillColor(sf::Color(100, 100, 48));
+        window.draw(square);
+        if (!ccolor && !no_rotate_screen) {
+            x += size_ceil*0.24;
+            y += size_ceil*0.24;
+        }
+        size-=size_ceil*0.24;
+        size_ceil = size*0.125;
         float ry;
         if (ccolor || no_rotate_screen) ry = y+size-size_ceil;
         else ry = y;
@@ -646,6 +697,25 @@ struct Board {
                 window.draw(rect);
                 figure f = board(cx, cy);
                 if (f.type==figureType::Empty) {
+                    if (cx==0) {
+                        sf::Text txt;
+                        txt.setString(std::to_string(cy+1));
+                        txt.setPosition(sf::Vector2f(rx+(!ccolor && !no_rotate_screen ?-size_ceil*0.24: size_ceil*1.07), ry+size_ceil*0.5));
+                        txt.setCharacterSize(size_ceil*0.2);
+                        txt.setFont(defaultFont);
+                        txt.setFillColor(sf::Color::Black);
+                        window.draw(txt);
+                    }
+                    if (cy==0) {
+                        std::vector<std::string> alphambet = {"A", "B", "C", "D", "E", "F", "G", "H"};
+                        sf::Text txt;
+                        txt.setString(alphambet[7-cx]);
+                        txt.setPosition(sf::Vector2f(rx+size_ceil*0.5, ry+(!ccolor && !no_rotate_screen ?-size_ceil*0.24: size_ceil)));
+                        txt.setCharacterSize(size_ceil*0.2);
+                        txt.setFont(defaultFont);
+                        txt.setFillColor(sf::Color::Black);
+                        window.draw(txt);
+                    }
                     if (!ccolor && !no_rotate_screen) {
                         rx += size_ceil;
                     } else {
@@ -667,12 +737,32 @@ struct Board {
                     figureR.setFillColor(f.getColor()?sf::Color::White:sf::Color::Black);
                     window.draw(figureR);
                 }   
+                if (cx==0) {
+                    sf::Text txt;
+                    txt.setString(std::to_string(cy+1));
+                    txt.setPosition(sf::Vector2f(rx+(!ccolor && !no_rotate_screen ?-size_ceil*0.24: size_ceil*1.07), ry+size_ceil*0.5));
+                    txt.setCharacterSize(size_ceil*0.2);
+                    txt.setFont(defaultFont);
+                    txt.setFillColor(sf::Color::Black);
+                    window.draw(txt);
+                }
+                if (cy==0) {
+                    std::vector<std::string> alphambet = {"A", "B", "C", "D", "E", "F", "G", "H"};
+                    sf::Text txt;
+                    txt.setString(alphambet[7-cx]);
+                    txt.setPosition(sf::Vector2f(rx+size_ceil*0.5, ry+(!ccolor && !no_rotate_screen ?-size_ceil*0.24: size_ceil)));
+                    txt.setCharacterSize(size_ceil*0.2);
+                    txt.setFont(defaultFont);
+                    txt.setFillColor(sf::Color::Black);
+                    window.draw(txt);
+                }
                 if (!ccolor && !no_rotate_screen) {
                     rx+=size_ceil;
                 } else {
                     rx-=size_ceil;
                 }            
             }   
+            
             if (!ccolor && !no_rotate_screen) {
                 ry += size_ceil;
             } else {
@@ -758,6 +848,7 @@ struct Board {
     void take_a_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
         board(data.second.second.first, data.second.second.second) = data.first.second.second;
         board(data.second.first.first, data.second.first.second).type = figureType::Empty;
+        
     }
     void take_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
         board(data.second.second.first, data.second.second.second) = data.first.second.second;
@@ -887,9 +978,8 @@ struct Board {
             __VA_ARGS__\
         }\
     }
-    std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> make_move(bool color, int depth = 8, int alpha = -1000000, int beta = 1000000, int score_cache=0) {
+    int make_move_calc(bool color, int depth = 8, int alpha = -1000000, int beta = 1000000, int score_cache=0) {
         int best_score = -1000000;
-        std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> best_step;
         // parallel_if(depth==6, Board board_copy = *this;, 0, 8, cy, 
         // std::vector<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>, LinearPoolAllocator<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>>> steps_all;
         // steps_all.reserve(32);
@@ -898,12 +988,15 @@ struct Board {
             valNoMeKing = -valNoMeKing;
         }
         bool ncolor = !color;
+        bool has_moves = false;
         for (int cy = 0; cy != 8; cy++) {
             for (int cx = 0; cx != 8; cx++) {
                 figure f = board(cx, cy);
                 if (f.type.value != figureType::Empty.value && f.getColor() == color) {
+                    bool change_to_pawn = abs(f.type.value, color)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
                     auto steps = get_steps(cx, cy);
                     for (auto step : steps) {
+                        has_moves = true;
                         int score = 0;
                         int new_score_cache = score_cache;
                         figure af = board(step.first, step.second);
@@ -913,11 +1006,8 @@ struct Board {
                         }
                         
                         auto data = take_a_step({cx, cy}, step);
-                        bool change_to_pawn = false;
-                        if (f.type==figureType::Pawn && ((step.second==7 && color) || (step.second==0 && ncolor))) {
-                            change_to_pawn = true;
-                        }
-                        for (int i = 0; i!=(change_to_pawn?4:1); i++) {
+                        #define two_for(var, ifvar, ...) if (var) {for (int i = 0; i!=ifvar; i++) {__VA_ARGS__}} else {int i = 0; __VA_ARGS__}
+                        two_for(change_to_pawn, 4, 
                             if (change_to_pawn) {
                                 board(step.first, step.second).setType(ftcf[i]);
                                 new_score_cache += ftcf[i].value-1;
@@ -930,12 +1020,11 @@ struct Board {
                                     //score = calc_score(color);
                                     score = new_score_cache;
                                 } else {
-                                    score = -make_move(ncolor, depth - 1, -beta, -alpha, -new_score_cache).first;
+                                    score = -make_move_calc(ncolor, depth - 1, -beta, -alpha, -new_score_cache);
                                 }
                             }
                             if (score > best_score) {
                                 best_score = score;
-                                best_step = {{{cx, cy}, step}, board(step.first, step.second)};
                             }
                             
                             if (best_score > alpha) {
@@ -944,14 +1033,88 @@ struct Board {
                             
                             if (alpha >= beta) {
                                 untake_a_step(data);
-                                return {best_score, best_step}; 
-                            }
-                        }
+                                return best_score; 
+                            })
+                        #undef two_for
                         untake_a_step(data);
                     }
                 }   
             }        
         }
+        if (!has_moves) {
+            best_score = -1000;
+        }
+        return best_score;
+    }
+    std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> make_move(bool color, int depth = 8, int score_cache=0) {
+        int best_score = -1000000;
+        //std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> best_step;
+        std::vector<std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> best_steps;
+        // parallel_if(depth==6, Board board_copy = *this;, 0, 8, cy, 
+        // std::vector<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>, LinearPoolAllocator<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>>> steps_all;
+        // steps_all.reserve(32);
+        int8_t valNoMeKing = figureType::King.value;
+        if (color) {
+            valNoMeKing = -valNoMeKing;
+        }
+        bool ncolor = !color;
+        bool has_moves = false;
+        for (int cy = 0; cy != 8; cy++) {
+            for (int cx = 0; cx != 8; cx++) {
+                figure f = board(cx, cy);
+                bool change_to_pawn = abs(f.type.value, color)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
+                if (f.type.value != figureType::Empty.value && f.getColor() == color) {
+                    auto steps = get_steps(cx, cy);
+                    for (auto step : steps) {
+                        has_moves = true;
+                        int score = 0;
+                        int new_score_cache = score_cache;
+                        figure af = board(step.first, step.second);
+                        bool kill_king = af.type.value == valNoMeKing;
+                        if (!kill_king) {
+                            new_score_cache += abs(af.type.value, ncolor);
+                        }
+                        
+                        auto data = take_a_step({cx, cy}, step);
+                        #define two_for(var, ifvar, ...) if (var) {for (int i = 0; i!=ifvar; i++) {__VA_ARGS__}} else {int i = 0; __VA_ARGS__}
+                        two_for(change_to_pawn, 4, 
+                            if (change_to_pawn) {
+                                board(step.first, step.second).setType(ftcf[i]);
+                                new_score_cache += ftcf[i].value-1;
+                            }
+                            if (kill_king) {
+                                // score = 900000 + depth*100 + calc_score(color);
+                                score = 900000 + depth*100 + new_score_cache;
+                            } else {
+                                if (depth == 1) {
+                                    //score = calc_score(color);
+                                    score = new_score_cache;
+                                } else {
+                                    score = -make_move_calc(ncolor, depth - 1, -1000000, 1000000, -new_score_cache);
+                                }
+                            }
+                            if (score > best_score) {
+                                best_score = score;
+                                best_steps.clear();
+                            }
+                            if (score==best_score) {
+                                best_steps.push_back({{{cx, cy}, step}, board(step.first, step.second)});
+                            }
+                        )
+                        #undef two_for
+                        untake_a_step(data);
+                    }
+                }   
+            }        
+        }
+        std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> best_step;
+        if (!has_moves) {
+            best_score = -1000;
+        } else {
+            int rnum = get_random(0, best_steps.size()-1);
+            best_step = best_steps[rnum];
+        }
+        
         return {best_score, best_step};
     }
     int calc_score_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data_step, int depth=6) {
@@ -960,11 +1123,10 @@ struct Board {
         bool kill_king = board(data_step.second.second.first, data_step.second.second.second).type == figureType::King;
         
         take_a_step(data_step);
-        bool change_to_pawn = false;
         if (kill_king) {
             score = 900000 - depth*100 + calc_score(ccolor);
         } else {
-            score = -make_move(!ccolor, depth - 1, 1000000, -1000000).first;
+            score = -make_move_calc(!ccolor, depth - 1, 1000000, -1000000);
         }
         untake_a_step(data_step);
         return score;
@@ -1173,7 +1335,7 @@ struct Board {
                 }
             }
         } else if (event.type==sf::Event::KeyPressed) {
-            if (event.key.control && event.key.code==sf::Keyboard::Z && animations.empty() && connection==nullptr) {
+            if (event.key.control && event.key.code==sf::Keyboard::Z && animations.empty() && !bot_thinking && connection==nullptr) {
                 if (!event.key.shift) {
                     control_z();
                 } else {
@@ -1245,18 +1407,46 @@ struct Board {
             }
         }
     }
+    void loadFromFileNC(std::wstring filename) {
+        static std::unique_ptr<NetworkInterface> ptr = nullptr;
+        loadFromFile(filename, ptr);
+    }
     void loadFromFile(std::wstring filename, std::unique_ptr<NetworkInterface>& connection) {
-        std::ifstream file(filename.c_str());
+        std::ifstream file(filename.c_str(), std::ios::binary);
+    
         if (!file.is_open()) {
-            std::cerr << "error open file!\n";
+            std::cerr << "Error opening file!\n";
             return;
         }
+
+        // 2. Читаем байты напрямую в вектор от начала до конца файла
+        std::vector<uint8_t> content(
+            (std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>()
+        );
+        std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+        if (connection!=nullptr) {
+            std::vector<uint8_t> send_data(4);
+            send_data[0] = content.size();
+            send_data[1] = content.size()>>8;
+            send_data[2] = content.size()>>16;
+            send_data[3] = content.size()>>24;
+            send_data.insert(send_data.end(), content.begin(), content.end());
+            std::string fn = converter.to_bytes(filename);
+            send_data.insert(send_data.end(), content.begin(), content.end());
+            send_data.insert(send_data.end(), fn.begin(), fn.end());
+            connection->send(send_data);
+        }
+        loadFromString(content, converter.to_bytes(filename));
+    }
+    void loadFromString(std::vector<uint8_t>& content, std::string filename) {
         for (int cy = 0; cy!=8; cy++) {
             for (int cx = 0; cx!=8; cx++) {
                 board(cx, cy).type = figureType::Empty;
             }
         }
         history.clear();
+        history_pos = 0;
         graph_score_white.values.clear();
         graph_score_black.values.clear();
         graph_score_step_white.values.clear();
@@ -1267,71 +1457,113 @@ struct Board {
         select_ceil.first = 255;
         select_ceil.second = 255;
         hint = std::nullopt;
-
-        std::string content((std::istreambuf_iterator<char>(file)),
-                        std::istreambuf_iterator<char>());
-        file.close();
-        if (connection!=nullptr) {
-            std::vector<uint8_t> send_data(content.begin(), content.end());
-            connection->send(send_data);
-        }
-        loadFromString(content);
-    }
-    void loadFromString(std::string& content) {
-        std::vector<std::string> words = splitBySpaces(content);
-        for (int i = 0; i!=words.size()-1; i+=5) {
-            // name
-            figureType type;
-            if (words[i]=="король") type=figureType::King;
-            else if (words[i]=="пешка") type=figureType::Pawn;
-            else if (words[i]=="ферзь") type=figureType::Queen;
-            else if (words[i]=="лодья") type=figureType::Rook;
-            else if (words[i]=="слон") type=figureType::Bishop;
-            else if (words[i]=="конь") type=figureType::Knight;
-            else {
-                std::cerr << "errors in file. got:" << words[i] << std::endl;
-                return;
+        if (filename.ends_with(".txt") || filename.ends_with(".cmap")) {
+            std::string content_str = std::string(content.begin(), content.end());
+            std::vector<std::string> words = splitBySpaces(content_str);
+            for (int i = 0; i!=words.size()-1; i+=5) {
+                // name
+                figureType type;
+                if (words[i]=="король") type=figureType::King;
+                else if (words[i]=="пешка") type=figureType::Pawn;
+                else if (words[i]=="ферзь") type=figureType::Queen;
+                else if (words[i]=="лодья") type=figureType::Rook;
+                else if (words[i]=="слон") type=figureType::Bishop;
+                else if (words[i]=="конь") type=figureType::Knight;
+                else {
+                    std::cerr << "errors in file. got:" << words[i] << std::endl;
+                    return;
+                }
+                // pos
+                int x = std::stoi(words[i+1])-1;
+                int y = std::stoi(words[i+2])-1;
+                // color
+                bool color = words[i+4]=="True";
+                board(x, y).setType(type);
+                board(x, y).setColor(color);
             }
-            // pos
-            int x = std::stoi(words[i+1])-1;
-            int y = std::stoi(words[i+2])-1;
-            // color
-            bool color = words[i+4]=="True";
-            board(x, y).setType(type);
-            board(x, y).setColor(color);
+            ccolor = words[words.size()-1]=="True";
+        } else if (filename.ends_with(".ctmap")) {
+            loadFromFileNC(L"./start.txt");
+            uint32_t size = content[0] | content[1]<<8 | content[2]<<16 | content[3]<<24;
+            //std::cout << "load:" << size << std::endl;
+            uint32_t size_of_bytes = size*sizeof(history[0]);
+            history.resize(size);
+            int j = 0;
+            for (int i = 4; i!=4+size_of_bytes; i+=sizeof(history[0])) {
+                history[j].first.first.type = content[i];
+                history[j].first.second.first.type = content[i+1];
+                history[j].first.second.second.type = content[i+2];
+                history[j].second.first.first = content[i+3];
+                history[j].second.first.second = content[i+4];
+                history[j].second.second.first = content[i+5];
+                history[j].second.second.second = content[i+6];
+                j++;
+            }
+            
+            for (auto step: history) {
+                take_a_step(step);
+            }
+            history_pos = history.size();
         }
-        ccolor = words[words.size()-1]=="True";
     }
     void saveInFile(std::wstring filename) {
-        std::ofstream file(filename.c_str());
-        if (!file.is_open()) {
-            std::cerr << "error open writen file!\n";
-            return;
-        }
-        std::string content;
-        for (int cy = 0; cy!=8; cy++) {
-            for (int cx = 0; cx!=8; cx++) {
-                if (board(cx, cy).type!=figureType::Empty) {
-                    figure f = board(cx, cy);
-                    if (f.type==figureType::King) content += "король ";
-                    else if (f.type==figureType::Queen) content += "ферзь ";
-                    else if (f.type==figureType::Knight) content += "конь ";
-                    else if (f.type==figureType::Pawn) content += "пешка ";
-                    else if (f.type==figureType::Bishop) content += "слон ";
-                    else if (f.type==figureType::Rook) content += "лодья ";
-                    else {
-                        std::cerr << "save error" << std::endl;
+        if (filename.ends_with(L".txt") || filename.ends_with(L".cmap")) {
+            std::ofstream file(filename.c_str());
+            if (!file.is_open()) {
+                std::cerr << "error open writen file!\n";
+                return;
+            }
+            std::string content;
+            for (int cy = 0; cy!=8; cy++) {
+                for (int cx = 0; cx!=8; cx++) {
+                    if (board(cx, cy).type!=figureType::Empty) {
+                        figure f = board(cx, cy);
+                        if (f.type==figureType::King) content += "король ";
+                        else if (f.type==figureType::Queen) content += "ферзь ";
+                        else if (f.type==figureType::Knight) content += "конь ";
+                        else if (f.type==figureType::Pawn) content += "пешка ";
+                        else if (f.type==figureType::Bishop) content += "слон ";
+                        else if (f.type==figureType::Rook) content += "лодья ";
+                        else {
+                            std::cerr << "save error" << std::endl;
+                        }
+                        content += std::to_string(cx+1) + ".0 ";
+                        content += std::to_string(cy+1) + ".0 ";
+                        content += "0.0 ";
+                        content += (f.getColor()?"True ": "False ");
                     }
-                    content += std::to_string(cx+1) + ".0 ";
-                    content += std::to_string(cy+1) + ".0 ";
-                    content += "0.0 ";
-                    content += (f.getColor()?"True ": "False ");
                 }
             }
+            content+=(ccolor?"True ": "False ");
+            file.write(content.c_str(), content.size());
+            file.close();
+        } else if (filename.ends_with(L".ctmap")) {
+            history.resize(history_pos);
+            uint32_t size_of_bytes = history.size()*sizeof(history[0]);
+            std::vector<uint8_t> data(4+size_of_bytes);
+            data[0] = history.size();
+            data[1] = history.size()>>8;
+            data[2] = history.size()>>16;
+            data[3] = history.size()>>24;
+            int j = 0;
+            for (int i = 4; i!=4+size_of_bytes; i+=sizeof(history[0])) {
+                data[i] = history[j].first.first.type.value;
+                data[i+1] = history[j].first.second.first.type.value;
+                data[i+2] = history[j].first.second.second.type.value;
+                data[i+3] = history[j].second.first.first;
+                data[i+4] = history[j].second.first.second;
+                data[i+5] = history[j].second.second.first;
+                data[i+6] = history[j].second.second.second;
+                j++;
+            }
+            std::ofstream file(filename.c_str(), std::ios::binary);
+            if (!file.is_open()) {
+                std::cerr << "error open writen file!\n";
+                return;
+            }
+            file.write((const char*)data.data(), data.size());
+            file.close();
         }
-        content+=(ccolor?"True ": "False ");
-        file.write(content.c_str(), content.size());
-        file.close();
     }
 };
 std::string getString(const std::string& title, const std::wstring& content, sf::RenderWindow& mainWindow) {
@@ -1624,8 +1856,13 @@ public:
                         board.take_a_step_anim(step);
                         board.ccolor = !board.ccolor;
                     } else {
-                        std::string file_save(buffer.begin(), buffer.end());
-                        board.loadFromString(file_save);
+                        uint32_t size =  static_cast<uint32_t>(buffer[0])         |
+                            (static_cast<uint32_t>(buffer[1]) << 8)  |
+                            (static_cast<uint32_t>(buffer[2]) << 16) |
+                            (static_cast<uint32_t>(buffer[3]) << 24);
+                        std::vector<uint8_t> content = std::vector<uint8_t>(buffer.begin()+4, buffer.begin()+4+size);
+                        std::string filename = std::string(buffer.begin()+4+size+1, buffer.end());
+                        board.loadFromString(content, filename);
                     }
                 } else if (status == sf::Socket::Status::Disconnected || status == sf::Socket::Status::Error) {
                     std::cout << "[Conn] connect stop" << std::endl;
@@ -1719,8 +1956,13 @@ public:
                         board.take_a_step_anim(step);
                         board.ccolor = !board.ccolor;
                     } else {
-                        std::string file_save(buffer.begin(), buffer.end());
-                        board.loadFromString(file_save);
+                        uint32_t size =  static_cast<uint32_t>(buffer[0])         |
+                            (static_cast<uint32_t>(buffer[1]) << 8)  |
+                            (static_cast<uint32_t>(buffer[2]) << 16) |
+                            (static_cast<uint32_t>(buffer[3]) << 24);
+                        std::vector<uint8_t> content = std::vector<uint8_t>(buffer.begin()+4, buffer.begin()+4+size);
+                        std::string filename = std::string(buffer.begin()+4+size+1, buffer.end());
+                        board.loadFromString(content, filename);
                     }
                 } else if (status == sf::Socket::Status::Disconnected || status == sf::Socket::Status::Error) {
                     std::cout << "[Conn] connect stop" << std::endl;
@@ -1775,8 +2017,7 @@ int main() {
         Textures.load();
         window.setFramerateLimit(30);
         Board cBoard;
-        std::unique_ptr<NetworkInterface> ptr = nullptr;
-        cBoard.loadFromFile(L"./start.txt", ptr);
+        cBoard.loadFromFileNC(L"./start.txt");
         window.clear(sf::Color::Black);
         cBoard.draw(window, 0, 0, std::min(width, height));
         window.display();
@@ -1785,15 +2026,15 @@ int main() {
         if (res==0) {
             cBoard.bot = false;
             cBoard.player_color = -1;
-            cBoard.loadFromFile(L"./start.txt", ptr);
+            cBoard.loadFromFileNC(L"./start.txt");
             connection = nullptr;
         } else if (res==1) {
             cBoard.bot = true;
             cBoard.player_color = -1;
-            cBoard.loadFromFile(L"./start.txt", ptr);
+            cBoard.loadFromFileNC(L"./start.txt");
             connection = nullptr;
         } else if (res==2) {
-            cBoard.loadFromFile(L"./start.txt", ptr);
+            cBoard.loadFromFileNC(L"./start.txt");
             connection = std::make_unique<Server>();
             if (connection->start(8080)==0) {
                 connection->listen(cBoard);
@@ -1804,7 +2045,7 @@ int main() {
                 connection = nullptr;
             }
         } else if (res==3) {
-            cBoard.loadFromFile(L"./start.txt", ptr);
+            cBoard.loadFromFileNC(L"./start.txt");
             std::string str = getString("input ip", L"Введите ip сервера", window);
             sf::IpAddress address(str);
             bool end = false;
@@ -1841,15 +2082,15 @@ int main() {
                         if (res==0) {
                             cBoard.bot = false;
                             cBoard.player_color = -1;
-                            cBoard.loadFromFile(L"./start.txt", ptr);
+                            cBoard.loadFromFileNC(L"./start.txt");
                             connection = nullptr;
                         } else if (res==1) {
                             cBoard.bot = true;
                             cBoard.player_color = -1;
-                            cBoard.loadFromFile(L"./start.txt", ptr);
+                            cBoard.loadFromFileNC(L"./start.txt");
                             connection = nullptr;
                         } else if (res==2) {
-                            cBoard.loadFromFile(L"./start.txt", ptr);
+                            cBoard.loadFromFileNC(L"./start.txt");
                             connection = std::make_unique<Server>();
                             if (connection->start(8080)==0) {
                                 connection->listen(cBoard);
@@ -1860,7 +2101,7 @@ int main() {
                                 connection = nullptr;
                             }
                         } else if (res==3) {
-                            cBoard.loadFromFile(L"./start.txt", ptr);
+                            cBoard.loadFromFileNC(L"./start.txt");
                             std::string str = getString("input ip", L"Введите ip сервера", window);
                             sf::IpAddress address(str);
                             bool end = false;
@@ -1882,14 +2123,14 @@ int main() {
                     if (button==0) { // restart
                         cBoard.loadFromFile(L"./start.txt", connection);
                     } else if (button==1) { // open
-                        std::optional<std::wstring> filename = OpenFileDialog(window,  L"Text Files (*.txt)\0*.txt\0"
-              L"Binary Files (*.bin)\0*.bin\0"
-              L"All Files (*.*)\0*.*\0\0");
+                        std::optional<std::wstring> filename = OpenFileDialog(window,  L"Chess2 map file (*.ctmap)\0*.ctmap\0"
+                            L"Text Files OLD (*.txt)\0*.txt\0");
                         if (filename) {
                             cBoard.loadFromFile(*filename, connection);
                         }
                     } else if (button==2) { // save
-                        std::optional<std::wstring> filename = SaveFileDialog(window,  L"Text Files (*.txt)\0*.txt\0"
+                        std::optional<std::wstring> filename = SaveFileDialog(window,  L"Chess2 map file (*.ctmap)\0*.ctmap\0"
+                                                                    L"Text Files OLD (*.txt)\0*.txt\0"
                                                                     L"Binary Files (*.bin)\0*.bin\0"
                                                                     L"All Files (*.*)\0*.*\0", L"txt");
                         if (filename) {
