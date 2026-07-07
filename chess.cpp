@@ -1013,6 +1013,7 @@ struct Board {
                                 board(step.first, step.second).setType(ftcf[i]);
                                 new_score_cache += ftcf[i].value-1;
                             }
+                            num++;
                             if (kill_king) {
                                 // score = 900000 + depth*100 + calc_score(color);
                                 score = 900000 + depth*100 + new_score_cache;
@@ -1048,6 +1049,7 @@ struct Board {
         return best_score;
     }
     std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> make_move(bool color, int depth = 8, int score_cache=0) {
+        num = 0;
         int best_score = -1000000;
         //std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> best_step;
         std::vector<std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> best_steps;
@@ -1083,6 +1085,7 @@ struct Board {
                                 board(step.first, step.second).setType(ftcf[i]);
                                 new_score_cache += ftcf[i].value-1;
                             }
+                            num++;
                             if (kill_king) {
                                 // score = 900000 + depth*100 + calc_score(color);
                                 score = 900000 + depth*100 + new_score_cache;
@@ -2017,7 +2020,7 @@ int main() {
         float height = 700;
         sf::VideoMode vidioMode(600, 700);
         sf::View view(sf::FloatRect(0.f, 0.f, 600.f, 700.f));
-        sf::RenderWindow window(vidioMode, "Chess 2.0");
+        sf::RenderWindow window(vidioMode, "Chess 2.0 v1.4.1");
         defaultFont.loadFromFile("C:/Windows/Fonts/arial.ttf");
         Textures.load();
         window.setFramerateLimit(30);
