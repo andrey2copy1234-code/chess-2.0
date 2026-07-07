@@ -495,6 +495,7 @@ const std::vector<figureType> ftcf = {figureType::Queen, figureType::Knight, fig
 struct Board {
     Array2D<figure, 8, 8> board;
     bool ccolor = true;
+    uint64_t num = 0;
     std::vector<Anim> animations;
     int x=0;
     int y=0;
@@ -993,7 +994,7 @@ struct Board {
             for (int cx = 0; cx != 8; cx++) {
                 figure f = board(cx, cy);
                 if (f.type.value != figureType::Empty.value && f.getColor() == color) {
-                    bool change_to_pawn = abs(f.type.value, color)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
+                    bool change_to_pawn = abs(f.type.value, ncolor)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
                     auto steps = get_steps(cx, cy);
                     for (auto step : steps) {
                         has_moves = true;
@@ -1002,7 +1003,7 @@ struct Board {
                         figure af = board(step.first, step.second);
                         bool kill_king = af.type.value == valNoMeKing;
                         if (!kill_king) {
-                            new_score_cache += abs(af.type.value, ncolor);
+                            new_score_cache += abs(af.type.value, color);
                         }
                         
                         auto data = take_a_step({cx, cy}, step);
@@ -1062,7 +1063,7 @@ struct Board {
         for (int cy = 0; cy != 8; cy++) {
             for (int cx = 0; cx != 8; cx++) {
                 figure f = board(cx, cy);
-                bool change_to_pawn = abs(f.type.value, color)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
+                bool change_to_pawn = abs(f.type.value, ncolor)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
                 if (f.type.value != figureType::Empty.value && f.getColor() == color) {
                     auto steps = get_steps(cx, cy);
                     for (auto step : steps) {
@@ -1072,7 +1073,7 @@ struct Board {
                         figure af = board(step.first, step.second);
                         bool kill_king = af.type.value == valNoMeKing;
                         if (!kill_king) {
-                            new_score_cache += abs(af.type.value, ncolor);
+                            new_score_cache += abs(af.type.value, color);
                         }
                         
                         auto data = take_a_step({cx, cy}, step);
@@ -1126,6 +1127,7 @@ struct Board {
         if (kill_king) {
             score = 900000 - depth*100 + calc_score(ccolor);
         } else {
+            //score = -make_move_calc(!ccolor, depth - 1, 1000000, -1000000);
             score = -make_move_calc(!ccolor, depth - 1, 1000000, -1000000);
         }
         untake_a_step(data_step);
@@ -1272,6 +1274,7 @@ struct Board {
                                         std::cout << "bars:" << end_bars-start_bars << std::endl;
                                         std::cout << "steps:" << (end_bars-start_bars)/120 << "-" << (end_bars-start_bars)/100 << std::endl;
                                         std::cout << "time:" << (double)t / CLOCKS_PER_SEC << " seconds" << std::endl;
+                                        std::cout << "real_steps:" << board_copy.num << std::endl;
                                         std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {bot_step.first.first, bot_step.first.second}};
                                         board(bot_step.first.second.first, bot_step.first.second.second) = bot_step.second;
                                         board(bot_step.first.first.first, bot_step.first.first.second).type = figureType::Empty;
@@ -1425,14 +1428,16 @@ struct Board {
             std::istreambuf_iterator<char>()
         );
         std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-        if (connection!=nullptr) {
-            std::vector<uint8_t> send_data(4);
-            send_data[0] = content.size();
-            send_data[1] = content.size()>>8;
-            send_data[2] = content.size()>>16;
-            send_data[3] = content.size()>>24;
-            send_data.insert(send_data.end(), content.begin(), content.end());
+        if (connection != nullptr) {
+            std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
             std::string fn = converter.to_bytes(filename);
+            std::vector<uint8_t> send_data;
+            send_data.reserve(4 + content.size() + fn.size());
+            uint32_t content_size = content.size();
+            send_data.push_back(content_size & 0xFF);
+            send_data.push_back((content_size >> 8) & 0xFF);
+            send_data.push_back((content_size >> 16) & 0xFF);
+            send_data.push_back((content_size >> 24) & 0xFF);
             send_data.insert(send_data.end(), content.begin(), content.end());
             send_data.insert(send_data.end(), fn.begin(), fn.end());
             connection->send(send_data);
