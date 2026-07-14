@@ -25,16 +25,22 @@
 #include "el_lange/el_alocator.cpp"
 #include "graphs.hpp"
 #include "libs/serialize.cpp"
+int elo = []() { int elo; std::ifstream("elo.bin", std::ios::binary).read(reinterpret_cast<char*>(&elo), 4); return elo; }();
 // --- Универсальное объявление интерфейсов Windows UPnP для Clang и GCC ---
-struct IStaticPortMapping : public IUnknown {
-    virtual ~IStaticPortMapping() = default;
+struct IStaticPortMapping : public IDispatch {
     virtual HRESULT STDMETHODCALLTYPE get_ExternalPort(long *pVal) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_Protocol(BSTR *pVal) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_InternalPort(long *pVal) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_InternalClient(BSTR *pVal) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_Enabled(VARIANT_BOOL *pVal) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_Description(BSTR *pVal) = 0;
+    virtual HRESULT STDMETHODCALLTYPE EditInternalClient(BSTR bstrInternalClient) = 0;
+    virtual HRESULT STDMETHODCALLTYPE Enable(VARIANT_BOOL vb) = 0;
+    virtual HRESULT STDMETHODCALLTYPE EditDescription(BSTR bstrDescription) = 0;
+    virtual HRESULT STDMETHODCALLTYPE EditInternalPort(long lInternalPort) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_ExternalIPAddress(BSTR *pVal) = 0; // Теперь метод физически на своем месте
 };
+
 
 struct IStaticPortMappingCollection : public IUnknown {
     virtual ~IStaticPortMappingCollection() = default;
@@ -180,6 +186,16 @@ struct figure {
             type.value = f.value;
         } else {
             type.value = -f.value;
+        }
+    }
+    // надо обновлять при изменении стоимости фигур
+    inline bool checkValidity() {
+        bool table[19] = {1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1};
+        uint8_t index = type.value+9;
+        if (index<19) {
+            return table[index];
+        } else {
+            return false;
         }
     }
 };
@@ -507,15 +523,9 @@ struct Board {
     int victory_type = 0; // 0 - нет. 1 - победа белых. 2 - ничья. 3 - победа чёрных
     std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>> history;
     int history_pos = 0;
-    Graph graph_score_white = {"score_white", {}, sf::Color(170, 170, 170), 1};
-    Graph graph_score_black = {"score_black", {}, sf::Color(20, 20, 20), 1};
-    Graph graph_score_step_white = {"score_white_step", {}, sf::Color(150, 150, 150), 2};
-    Graph graph_score_step_black = {"score_black_step", {}, sf::Color(40, 40, 40), 2};
-    Graph graph_max_score_step_white = {"score_white_max_step", {}, sf::Color(130, 130, 130), 2};
-    Graph graph_max_score_step_black = {"score_black_max_step", {}, sf::Color(60, 60, 60), 2};
-    std::shared_ptr<std::optional<ChessAnalyticsWindow>> analytics;
     std::optional<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>> hint;
-    int bot_depth = 6;
+    std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>> history_hint;
+    int bot_depth = 7;
     int player_color = -1;
 
     inline std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> get_steps(int x, int y) {
@@ -823,21 +833,6 @@ struct Board {
             }
             window.draw(text);
         }
-        if (analytics) {
-            (*analytics)->update();
-            (*analytics)->render();
-            if (animations.empty()) {
-                int gx = (*analytics)->getSelectedX();
-                if (history_pos>gx) {
-                    control_z();
-                } else if (history_pos<gx) {
-                    control_shift_z();
-                }
-            }
-            if (!(*analytics)->isOpen()) {
-                analytics.reset();
-            }
-        }
     }
     std::pair<std::pair<figure, figure>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> take_a_step(std::pair<uint8_t, uint8_t> pos, std::pair<uint8_t, uint8_t> step) {
         figure af = board(step.first, step.second);
@@ -855,6 +850,11 @@ struct Board {
         board(data.second.second.first, data.second.second.second) = data.first.second.second;
         board(data.second.first.first, data.second.first.second).type = figureType::Empty;
         animations.emplace_back(0.3, data.second.first, data.second.second);
+    }
+    void take_a_step_anim(std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> data) {
+        board(data.first.second.first, data.first.second.second) = data.second;
+        board(data.first.first.first, data.first.first.second).type = figureType::Empty;
+        animations.emplace_back(0.3, data.first.first, data.first.second);
     }
     void untake_a_step(std::pair<std::pair<figure, figure>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
         board(data.second.first.first, data.second.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
@@ -1136,6 +1136,30 @@ struct Board {
         untake_a_step(data_step);
         return score;
     }
+    bool check_win() {
+        int end_check_black = check_end(ccolor);
+        int end_check_white = check_end(!ccolor);
+        if (!ccolor) {
+            std::swap(end_check_black, end_check_white);
+        }
+        if (end_check_black==1) {
+            victory_type = 1;
+            ccolor = !ccolor;
+            return true;
+        } else if (end_check_white==1) {
+            victory_type = 3;
+            ccolor = !ccolor;
+            return true;
+        } else if (end_check_black==2) {
+            victory_type = 2;
+            ccolor = !ccolor;
+            return true;
+        }
+        return false;
+    }
+    int get_bot_elo() {
+        return 200*bot_depth;
+    }
     void giveEvent(sf::RenderWindow& window, sf::Event event, std::unique_ptr<NetworkInterface>& connection) {
         if (event.type==sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
             int x_click = event.mouseButton.x;
@@ -1150,7 +1174,7 @@ struct Board {
                     y_click=7-y_click;
                     x_click=7-x_click;
                 }
-                if (animations.empty() && victory_type==0 && !bot_thinking && (ccolor==player_color || player_color==-1)) {
+                if (animations.empty() && victory_type==0 && !bot_thinking && (ccolor==player_color || player_color==-1) && history_hint.empty()) {
                     if (select_ceil.first==255) {
                         if (board(x_click, y_click).type!=figureType::Empty && board(x_click, y_click).getColor()==ccolor) {
                             select_ceil.first = x_click;
@@ -1184,42 +1208,6 @@ struct Board {
                                 }
                                 if (history.size()!=history_pos) {
                                     history.resize(history_pos);
-                                    int add_for_white = 0;
-                                    if ((history_pos&1)==1) add_for_white++;
-                                    graph_score_white.values.resize(history_pos);
-                                    graph_score_black.values.resize(history_pos);
-                                    graph_score_step_white.values.resize(history_pos/2+add_for_white);
-                                    graph_score_step_black.values.resize(history_pos/2);
-                                    graph_max_score_step_white.values.resize(history_pos/2+add_for_white);
-                                    graph_max_score_step_black.values.resize(history_pos/2);
-                                }
-                                graph_score_white.values.push_back(calc_score(true));
-                                graph_score_black.values.push_back(calc_score(false));
-                                int score_me = calc_score_step(data);
-                                if (abs(score_me)>8000) {
-                                    if (score_me==abs(score_me)) {
-                                        score_me = 40;
-                                    } else {
-                                        score_me = -40;
-                                    }
-                                }
-                                if (ccolor) {
-                                    graph_score_step_white.values.push_back(score_me);
-                                } else {
-                                    graph_score_step_black.values.push_back(score_me);
-                                }
-                                auto [score, bot_step] = make_move(ccolor, 5);
-                                if (abs(score)>8000) {
-                                    if (score==abs(score)) {
-                                        score = 40;
-                                    } else {
-                                        score = -40;
-                                    }
-                                }
-                                if (ccolor) {
-                                    graph_max_score_step_white.values.push_back(score);
-                                } else {
-                                    graph_max_score_step_black.values.push_back(score);
                                 }
                                 board(select_ceil.first, select_ceil.second).type = figureType::Empty;
                                 data.first.second.second = f;
@@ -1237,28 +1225,30 @@ struct Board {
                                 select_ceil.first = 255;
                                 select_ceil.second = 255;
 
-                                int end_check_black = check_end(ccolor);
-                                int end_check_white = check_end(!ccolor);
-                                if (!ccolor) {
-                                    std::swap(end_check_black, end_check_white);
-                                }
-                                if (end_check_black==1) {
-                                    victory_type = 1;
-                                    ccolor = !ccolor;
-                                    return;
-                                } else if (end_check_white==1) {
-                                    victory_type = 3;
-                                    ccolor = !ccolor;
-                                    return;
-                                } else if (end_check_black==2) {
-                                    victory_type = 2;
-                                    ccolor = !ccolor;
+                                if (check_win()) {
+                                    if (connection!=nullptr) {
+                                        std::pair<int, uint8_t> data_end = {elo, victory_type};
+                                        std::vector<uint8_t> send_data;
+                                        send_data.assign((uint8_t*)&data_end, ((uint8_t*)&data_end)+sizeof(data_end));
+                                        connection->send(send_data);
+                                    } else if (bot==true) {
+                                        double expected = 1.0 / (1.0 + pow(10.0, (get_bot_elo() - elo) / 400.0)); // ожидаемый результат
+                                        // 2. Определяем реальный результат игрока (S)
+                                        double actual = 0.5;
+                                        if (victory_type == 1) {
+                                            actual = ((!ccolor) == 1) ? 1.0 : 0.0; // Победа белых
+                                        } else if (victory_type == 3) {
+                                            actual = ((!ccolor) == 0) ? 1.0 : 0.0; // Победа чёрных
+                                        }
+                                        int K = 32; // 40 для новичков, 32 для базы
+                                        elo = std::round(elo + K * (actual - expected));
+                                    }
                                     return;
                                 }
                                 if (!bot) {
                                     ccolor = !ccolor;
                                     if (hint) {
-                                        hint = make_move(ccolor, 6);
+                                        hint = make_move(ccolor, bot_depth-1);
                                     }
                                 }
                                 found = true;
@@ -1275,7 +1265,7 @@ struct Board {
                                         t = clock() - t; // Вычисляем разницу в тактах 
                                         std::cout << "score:" << score << std::endl;
                                         std::cout << "bars:" << end_bars-start_bars << std::endl;
-                                        std::cout << "steps:" << (end_bars-start_bars)/120 << "-" << (end_bars-start_bars)/100 << std::endl;
+                                        // std::cout << "steps:" << (end_bars-start_bars)/100 << "-" << (end_bars-start_bars)/80 << std::endl;
                                         std::cout << "time:" << (double)t / CLOCKS_PER_SEC << " seconds" << std::endl;
                                         std::cout << "real_steps:" << board_copy.num << std::endl;
                                         std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {bot_step.first.first, bot_step.first.second}};
@@ -1285,41 +1275,22 @@ struct Board {
                                         // записываем в историю
                                         history.insert(history.begin()+history_pos, bot_data);
                                         history_pos++;
-                                        if (abs(score)>8000) {
-                                            if (score==abs(score)) {
-                                                score = 40;
-                                            } else {
-                                                score = -40;
-                                            }
-                                        }
-                                        if (!ccolor) {
-                                            graph_score_step_white.values.push_back(score);
-                                            graph_max_score_step_white.values.push_back(score);
-                                        } else {
-                                            graph_score_step_black.values.push_back(score);
-                                            graph_max_score_step_black.values.push_back(score);
-                                        }
                                         // проверяем на победы
-                                        int end_check_black = check_end(ccolor);
-                                        int end_check_white = check_end(!ccolor);
-                                        if (ccolor) {
-                                            std::swap(end_check_black, end_check_white);
-                                        }
-                                        if (end_check_black==1) {
-                                            victory_type = 1;
-                                            ccolor = !ccolor;
-                                            return;
-                                        } else if (end_check_white==1) {
-                                            victory_type = 3;
-                                            ccolor = !ccolor;
-                                            return;
-                                        } else if (end_check_black==2) {
-                                            victory_type = 2;
-                                            ccolor = !ccolor;
+                                        if (check_win()) {
+                                            double expected = 1.0 / (1.0 + pow(10.0, (get_bot_elo() - elo) / 400.0)); // ожидаемый результат
+                                            // Определяем реальный результат игрока (S)
+                                            double actual = 0.5;
+                                            if (victory_type == 1) {
+                                                actual = (ccolor == 1) ? 1.0 : 0.0; // Победа белых
+                                            } else if (victory_type == 3) {
+                                                actual = (ccolor == 0) ? 1.0 : 0.0; // Победа чёрных
+                                            }
+                                            int K = 32; // 40 для новичков, 32 для базы
+                                            elo = std::round(elo + K * (actual - expected));
                                             return;
                                         }
                                         if (hint) {
-                                            hint = make_move(ccolor, 6);
+                                            hint = make_move(ccolor, bot_depth-1);
                                         }
                                         bot_thinking = false;
                                     });
@@ -1351,20 +1322,14 @@ struct Board {
                 if (event.key.alt) {
                     if (hint) {
                         hint = std::nullopt;
-                    } else {
-                        hint = make_move(ccolor, 6);
-                    }
-                } else if (!analytics && victory_type!=0) {
-                    analytics = std::make_shared<std::optional<ChessAnalyticsWindow>>(
-                        std::vector<Graph>{
-                            graph_score_white, 
-                            graph_score_black, 
-                            graph_score_step_white, 
-                            graph_score_step_black, 
-                            graph_max_score_step_white, 
-                            graph_max_score_step_black
+                        for (int i = history_hint.size()-1; i!=-1; i++) {
+                            untake_a_step(history_hint[i]);
+                            ccolor = !ccolor;
                         }
-                    );
+                        history_hint.clear();
+                    } else {
+                        hint = make_move(ccolor, bot_depth-1);
+                    }
                 }
             } else if (event.key.code == sf::Keyboard::D) {
                 int depth = getNumber("select depth bot", "select depth (current depth "+std::to_string(bot_depth)+")", window);
@@ -1372,13 +1337,33 @@ struct Board {
                     bot_depth = depth;
                 }
             }
+        } else if (event.type == sf::Event::TextEntered) {
+            if (event.text.unicode == '?') { 
+                if (hint && bot_depth-1-(int)history_hint.size()>0 && animations.empty()) {
+                    auto bot_step = hint->second;
+                    std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {bot_step.first.first, bot_step.first.second}};
+                    take_a_step_anim(hint->second);
+                    ccolor = !ccolor;
+                    hint = make_move(ccolor, bot_depth-1-history_hint.size());
+                    history_hint.push_back(bot_data);
+                }
+            }
         }
     }
     void control_z() {
         select_ceil.first = 255;
         select_ceil.second = 255;
+        if (!history_hint.empty()) {
+            auto bot_data = history_hint.back();
+            history_hint.pop_back();
+            untake_a_step_anim(bot_data);
+            ccolor = !ccolor;
+            std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> bot_step = {bot_data.second, bot_data.first.second.second};
+            hint = {0, bot_step};
+            return;
+        }
         int num_steps = -1;
-        if (bot && !analytics) num_steps = -2;
+        if (bot) num_steps = -2;
         for (int i = 0; i!=abs(num_steps); i++) {
             history_pos--;
             if(history_pos==-1) {
@@ -1388,7 +1373,7 @@ struct Board {
             untake_a_step_anim(history[history_pos]);
             ccolor=!ccolor;
             if (hint && i+1==abs(num_steps)) {
-                hint = make_move(ccolor, 6);
+                hint = make_move(ccolor, bot_depth-1);
             } else {
                 hint = std::nullopt;
             }
@@ -1397,8 +1382,9 @@ struct Board {
     void control_shift_z() {
         select_ceil.first = 255;
         select_ceil.second = 255;
+        if (!history_hint.empty()) return;
         int num_steps = -1;
-        if (bot && !analytics) num_steps = -2;
+        if (bot) num_steps = -2;
         for (int i = 0; i!=abs(num_steps); i++) {
             if(history_pos==history.size()) {
                 return;
@@ -1407,7 +1393,7 @@ struct Board {
             history_pos++;
             ccolor = !ccolor;
             if (hint && i+1==abs(num_steps)) {
-                hint = make_move(ccolor, 6);
+                hint = make_move(ccolor, bot_depth-1);
             } else {
                 hint = std::nullopt;
             }
@@ -1455,16 +1441,11 @@ struct Board {
         }
         history.clear();
         history_pos = 0;
-        graph_score_white.values.clear();
-        graph_score_black.values.clear();
-        graph_score_step_white.values.clear();
-        graph_score_step_black.values.clear();
-        graph_max_score_step_white.values.clear();
-        graph_max_score_step_black.values.clear();
         victory_type = 0;
         select_ceil.first = 255;
         select_ceil.second = 255;
         hint = std::nullopt;
+        history_hint.clear();
         if (filename.ends_with(".txt") || filename.ends_with(".cmap")) {
             std::string content_str = std::string(content.begin(), content.end());
             std::vector<std::string> words = splitBySpaces(content_str);
@@ -1484,6 +1465,10 @@ struct Board {
                 // pos
                 int x = std::stoi(words[i+1])-1;
                 int y = std::stoi(words[i+2])-1;
+                if ((uint8_t)x>=8 || (uint8_t)y>=8) {
+                    std::cout << "bad file. error: pos figure" << std::endl;
+                    return;
+                }
                 // color
                 bool color = words[i+4]=="True";
                 board(x, y).setType(type);
@@ -1510,6 +1495,17 @@ struct Board {
             
             for (auto step: history) {
                 take_a_step(step);
+                ccolor = !ccolor;
+                if (step.second.first.first>=8 || (uint8_t)step.second.first.second>=8 || step.second.second.first>=8 || (uint8_t)step.second.second.second>=8) {
+                    std::cout << "bad file. error: invalid step" << std::endl;
+                    loadFromFileNC(L"start.txt");
+                    return;
+                }
+                if (!step.first.first.checkValidity() || !step.first.second.first.checkValidity() || !step.first.second.second.checkValidity()) {
+                    std::cout << "bad file. error: invalid figure in step" << std::endl;
+                    loadFromFileNC(L"start.txt");
+                    return;
+                }
             }
             history_pos = history.size();
         }
@@ -1754,6 +1750,63 @@ public:
         bstrProtocol = nullptr;
         return false;
     }
+    std::string getGlobalIpDirectly() {
+        if (!pMappings) {
+            return "'not supported'";
+        }
+
+        IStaticPortMapping* pMapping = nullptr;
+        BSTR bstrProto = (bstrProtocol) ? bstrProtocol : SysAllocString(L"TCP");
+        BSTR bstrExternalIp = nullptr;
+        std::string resultIp = "";
+        HRESULT hr = E_FAIL;
+
+        long testPort = (openedPort > 0) ? openedPort : 7777; 
+        bool temporaryCreated = false;
+
+        // 1. Проверяем, есть ли уже такое правило в таблице роутера
+        hr = pMappings->get_Item(testPort, bstrProto, &pMapping);
+
+        // 2. Если правила нет, временно создаем пустышку на 127.0.0.1
+        if (FAILED(hr) || !pMapping) {
+            BSTR bstrTempIp = SysAllocString(L"127.0.0.1");
+            BSTR bstrDesc = SysAllocString(L"TempIpCheck");
+            
+            hr = pMappings->Add(testPort, bstrProto, testPort, bstrTempIp, VARIANT_TRUE, bstrDesc, &pMapping);
+            
+            SysFreeString(bstrTempIp);
+            SysFreeString(bstrDesc);
+            
+            if (SUCCEEDED(hr)) {
+                temporaryCreated = true;
+            }
+        }
+
+        // 3. Вытаскиваем IP из правила по прямой виртуальной функции get_ExternalIPAddress
+        if (SUCCEEDED(hr) && pMapping) {
+            hr = pMapping->get_ExternalIPAddress(&bstrExternalIp);
+            
+            if (SUCCEEDED(hr) && bstrExternalIp) {
+                std::wstring wsIp(bstrExternalIp, SysStringLen(bstrExternalIp));
+                resultIp = std::string(wsIp.begin(), wsIp.end());
+                SysFreeString(bstrExternalIp);
+            }
+            
+            // Если это было временное правило — стираем его за собой
+            if (temporaryCreated) {
+                pMapping->Release();
+                pMappings->Remove(testPort, bstrProto);
+            } else {
+                pMapping->Release();
+            }
+        }
+
+        if (!bstrProtocol) {
+            SysFreeString(bstrProto);
+        }
+
+        return "'"+resultIp+"'";
+    }
 
     void closePort() {
         if (!isPortForwarded || !pMappings || !bstrProtocol) return;
@@ -1842,6 +1895,9 @@ public:
             return 2;
         }
     }
+    std::string get_global_ip() {
+        return forwarder.getGlobalIpDirectly();
+    }
     virtual void listen(Board& board) {
         listen_work = true;
         std::thread th([this, &board]() {
@@ -1859,10 +1915,36 @@ public:
                         std::cout << static_cast<int>(byte) << " ";
                     }
                     std::cout << std::endl;
-                    if (buffer.size()==7) {
+                    if (buffer.size()==5) { // информация о победе
+                        std::pair<int, uint8_t> data_end = *(std::pair<int, uint8_t>*)buffer.data();
+                        if (data_end.second!=0) {
+                            double expected = 1.0 / (1.0 + pow(10.0, (data_end.first - elo) / 400.0)); // ожидаемый результат
+                            // 2. Определяем реальный результат игрока (S)
+                            double actual = 0.5;
+                            if (data_end.second == 1) {
+                                actual = (board.player_color == 1) ? 1.0 : 0.0; // Победа белых
+                            } else if (data_end.second == 3) {
+                                actual = (board.player_color == 0) ? 1.0 : 0.0; // Победа чёрных
+                            }
+
+                            int K = 32; // 40 для новичков, 32 для базы
+                            elo = std::round(elo + K * (actual - expected));
+                        }
+                    } else if (buffer.size()==7) {
                         std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> step = *(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>*)buffer.data();
-                        board.take_a_step_anim(step);
-                        board.ccolor = !board.ccolor;
+                        if (board.ccolor!=board.player_color && step.second.first.first<8 && step.second.first.second<8 && step.second.second.first<8 && step.second.second.second<8) {
+                            board.take_a_step_anim(step);
+                            if (board.check_win()) {
+                                std::pair<int, uint8_t> data_end = {elo, board.victory_type};
+                                std::vector<uint8_t> send_data;
+                                send_data.assign((uint8_t*)&data_end, ((uint8_t*)&data_end)+sizeof(data_end));
+                                send(send_data);
+                            } else {
+                                board.ccolor = !board.ccolor;
+                            }
+                        } else {
+                            std::cout << "a cheating move by an opponent" << std::endl;
+                        }
                     } else {
                         uint32_t size =  static_cast<uint32_t>(buffer[0])         |
                             (static_cast<uint32_t>(buffer[1]) << 8)  |
@@ -1959,10 +2041,36 @@ public:
                         std::cout << static_cast<int>(byte) << " ";
                     }
                     std::cout << std::endl;
-                    if (buffer.size()==7) {
+                    if (buffer.size()==5) { // информация о победе
+                        std::pair<int, uint8_t> data_end = *(std::pair<int, uint8_t>*)buffer.data();
+                        if (data_end.second!=0) {
+                            double expected = 1.0 / (1.0 + pow(10.0, (data_end.first - elo) / 400.0)); // ожидаемый результат
+                            // 2. Определяем реальный результат игрока (S)
+                            double actual = 0.5;
+                            if (data_end.second == 1) {
+                                actual = (board.player_color == 1) ? 1.0 : 0.0; // Победа белых
+                            } else if (data_end.second == 3) {
+                                actual = (board.player_color == 0) ? 1.0 : 0.0; // Победа чёрных
+                            }
+
+                            int K = 32; // 40 для новичков, 32 для базы
+                            elo = std::round(elo + K * (actual - expected));
+                        }
+                    } else if (buffer.size()==7) {
                         std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> step = *(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>*)buffer.data();
-                        board.take_a_step_anim(step);
-                        board.ccolor = !board.ccolor;
+                        if (board.ccolor!=board.player_color && step.second.first.first<8 && step.second.first.second<8 && step.second.second.first<8 && step.second.second.second<8) {
+                            board.take_a_step_anim(step);
+                            if (board.check_win()) {
+                                std::pair<int, uint8_t> data_end = {elo, board.victory_type};
+                                std::vector<uint8_t> send_data;
+                                send_data.assign((uint8_t*)&data_end, ((uint8_t*)&data_end)+sizeof(data_end));
+                                send(send_data);
+                            } else {
+                                board.ccolor = !board.ccolor;
+                            }
+                        } else {
+                            std::cout << "a cheating move by an opponent" << std::endl;
+                        }
                     } else {
                         uint32_t size =  static_cast<uint32_t>(buffer[0])         |
                             (static_cast<uint32_t>(buffer[1]) << 8)  |
@@ -2014,13 +2122,175 @@ public:
     }
 };
 
+struct LinkBounds {
+    size_t start;
+    size_t length;
+    std::wstring url;
+};
+std::vector<LinkBounds> findLinksInText(const std::wstring& str) {
+    std::vector<LinkBounds> links;
+    std::vector<std::wstring> prefixes = { L"http://", L"https://" };
+
+    for (const auto& prefix : prefixes) {
+        size_t pos = str.find(prefix, 0);
+        while (pos != std::wstring::npos) {
+            size_t endPos = str.find_first_of(L" \n\t\r", pos);
+            if (endPos == std::wstring::npos) {
+                endPos = str.length();
+            }
+
+            size_t len = endPos - pos;
+            if (len > prefix.length()) { // Проверяем, что это не просто "https://"
+                links.push_back({ pos, len, str.substr(pos, len) });
+            }
+            pos = str.find(prefix, endPos);
+        }
+    }
+    return links;
+}
+void showHelp() {
+    std::wstring helpData = 
+L"# Chess\n"
+"Версия v2.0.0\n"
+"Информация о вас:\n"
+"* Ваш Эло "+std::to_wstring(elo)+L"\n"
+"# Горячие клавиши:\n"
+"##  * Обычные:\n"
+"   * m - открывает окно выбора режима\n"
+"   * Alt-A - включает подсказки\n"
+"   * ? - показывает при включённой подсказке почему бот так пошёл ввиде делания плюс один ход как он думает произойдёт\n"
+"   * Control-H - вызывает это\n"
+"##  * Более точные:\n"
+"   * d - Установить глубину думания в полуходах бота\n"
+"##  * Частично реализоуванные другими/недобавленый функционал:\n"
+"   * b - включает бота (не включайте если вы в режиме онлайн)\n"
+"   * s - включает переворот экрана. выглядит пока что плохо\n"
+"# Как поиграть по сети?\n"
+"## Если вы играете в локальной сети:\n"
+"  1. Выберете играть \"игрок против игрока онлайн\"\n"
+"  2. тот кто играет за чёрных выбирает \"Запустить сервер\" а тот кто за чёрных \"Подключится к серверу\"\n"
+"  3. тот кто выбрал подключится к серверу вводит local address который написало у того кто нажал \"Запустить сервер\"\n"
+"  4. Играйте!\n"
+"  5. Вы можете открыть сохранение и оно откроется у обоих (тоже самое с restart)\n"
+"## Если вы играете не в локальной сети:\n"
+"  1. Выберете играть \"игрок против игрока онлайн\"\n"
+"  2. тот кто играет за чёрных выбирает \"Запустить сервер\" а тот кто за чёрных \"Подключится к серверу\"\n"
+"  3. тот кто выбрал подключится к серверу вводит global address который написало у того кто нажал \"Запустить сервер\"\n"
+"  4. Играйте!\n"
+"  5. Вы можете открыть сохранение и оно откроется у обоих (тоже самое с restart)\n"
+"## Если у вас не получилось то проверьте консоль:\n"
+"  * если там написано где-то WinAPI UPnP и второй раз UPnP то это проблемы с роутером ведь он не поддерживает UPnP также такая проблема будет если вы раздаёте интернет с телефона на пк.\n"
+"  * если WinAPI UPnP и HRESULT то гуглите в интернете код который написан (он не относится к самим шахматам) и решайте проблему как сказано в интернете если это возможно.\n"
+"# Бот\n"
+" * у бота 200*полуходы_наперёд эло. по умолчанию 1400 эло\n"
+" * бот по умолчанию думает на 7 полуходов наперёд\n"
+" * бот видит маты на depth-2 ходов наперёд\n"
+"# Если остались вопросы:\n"
+"переходите по ссылке https://github.com/andrey2copy1234-code/chess-2.0"
+;
+    sf::RenderWindow helpWindow(sf::VideoMode(640, 480), L"Справка", sf::Style::Titlebar | sf::Style::Close);
+    helpWindow.setFramerateLimit(60);
+
+    std::vector<sf::Text> textLines;
+    float currentY = 20.f;
+    float margin = 20.f;
+    float maxWidth = 600.f;
+
+    // Парсим текст
+    std::wstringstream ss(helpData);
+    std::wstring line;
+    while (std::getline(ss, line)) {
+        sf::Text text;
+        text.setFont(defaultFont);
+        text.setFillColor(sf::Color::White);
+        
+        unsigned int fontSize = 18;
+        sf::Text::Style style = sf::Text::Regular;
+
+        if (line.find(L"# ") == 0) {
+            fontSize = 32; style = sf::Text::Bold; line = line.substr(2);
+        } else if (line.find(L"## ") == 0) {
+            fontSize = 24; style = sf::Text::Bold; line = line.substr(3);
+        }
+
+        text.setCharacterSize(fontSize);
+        text.setStyle(style);
+        
+        // Логика переноса слов
+        std::wstring wrappedLine;
+        std::wstring word;
+        std::wstringstream lineStream(line);
+        
+        while (lineStream >> word) {
+            sf::Text temp = text;
+            temp.setString(wrappedLine + word + L" ");
+            if (temp.getGlobalBounds().width > maxWidth) {
+                wrappedLine += L"\n";
+            }
+            wrappedLine += word + L" ";
+        }
+
+        text.setString(wrappedLine);
+        text.setPosition(margin, currentY);
+        textLines.push_back(text);
+        
+        currentY += text.getGlobalBounds().height + 15.f;
+    }
+
+    // Настройка прокрутки (View)
+    sf::View view = helpWindow.getDefaultView();
+    float scrollSpeed = 20.f;
+    float totalHeight = currentY; 
+
+    while (helpWindow.isOpen()) {
+        sf::Event event;
+        while (helpWindow.pollEvent(event)) {
+            if (event.type == sf::Event::Closed) helpWindow.close();
+            
+            // Прокрутка колесиком мыши
+            if (event.type == sf::Event::MouseWheelScrolled) {
+                if (event.mouseWheelScroll.delta > 0 && view.getCenter().y > view.getSize().y / 2)
+                    view.move(0, -scrollSpeed*event.mouseWheelScroll.delta);
+                else if (event.mouseWheelScroll.delta < 0 && view.getCenter().y < totalHeight - view.getSize().y / 2)
+                    view.move(0, -scrollSpeed*event.mouseWheelScroll.delta);
+            } else if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
+                sf::Vector2i mousePosWindow = sf::Mouse::getPosition(helpWindow);
+                sf::Vector2f mousePosWorld = helpWindow.mapPixelToCoords(mousePosWindow, view);
+                bool linkClicked = false;
+                for (const auto& t : textLines) {
+                    if (linkClicked) break; 
+                    std::wstring currentStr = t.getString().toWideString();
+                    std::vector<LinkBounds> foundLinks = findLinksInText(currentStr);
+                    for (const auto& link : foundLinks) {
+                        sf::Vector2f startPos = t.findCharacterPos(link.start);
+                        sf::Vector2f endPos = t.findCharacterPos(link.start + link.length);
+
+                        float fontHeight = static_cast<float>(t.getCharacterSize());
+                        sf::FloatRect linkRect(startPos.x, startPos.y, endPos.x - startPos.x, fontHeight);
+                        if (linkRect.contains(mousePosWorld)) {
+                            ShellExecuteW(nullptr, L"open", link.url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                            linkClicked = true; 
+                            break; 
+                        }
+                    }
+                }
+            }
+        }
+
+        helpWindow.clear(sf::Color(45, 45, 45));
+        helpWindow.setView(view);
+        for (const auto& t : textLines) helpWindow.draw(t);
+        helpWindow.display();
+    }
+}
+
 int main() {
     // try {
         float width = 600;
         float height = 700;
         sf::VideoMode vidioMode(600, 700);
         sf::View view(sf::FloatRect(0.f, 0.f, 600.f, 700.f));
-        sf::RenderWindow window(vidioMode, "Chess 2.0 v1.4.1");
+        sf::RenderWindow window(vidioMode, "Chess v2.0.0");
         defaultFont.loadFromFile("C:/Windows/Fonts/arial.ttf");
         Textures.load();
         window.setFramerateLimit(30);
@@ -2042,29 +2312,34 @@ int main() {
             cBoard.loadFromFileNC(L"./start.txt");
             connection = nullptr;
         } else if (res==2) {
+            cBoard.bot = false;
             cBoard.loadFromFileNC(L"./start.txt");
             connection = std::make_unique<Server>();
+            std::cout << "server starting on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
+            std::cout << "server starting on " << static_cast<Server*>(connection.get())->get_global_ip() << " global address" << std::endl;
             if (connection->start(8080)==0) {
                 connection->listen(cBoard);
                 cBoard.player_color = 0;
-                std::cout << "server start on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
-                std::cout << "server start on " << sf::IpAddress::getPublicAddress(sf::seconds(3)).toString() << "global address" << std::endl;
             } else {
                 connection = nullptr;
+                cBoard.player_color = -1;
             }
         } else if (res==3) {
+            cBoard.bot = false;
             cBoard.loadFromFileNC(L"./start.txt");
             std::string str = getString("input ip", L"Введите ip сервера", window);
             sf::IpAddress address(str);
             bool end = false;
             if (address == sf::IpAddress::None) {
-                bool end = true; 
+                end = true; 
             }
             if (!end) {
                 connection = std::make_unique<Client>(str);
                 connection->start(8080);
                 connection->listen(cBoard);
-                cBoard.player_color = 1;
+                cBoard.player_color = 0;
+            } else {
+                cBoard.player_color = -1;
             }
         }
         while (window.isOpen()) {
@@ -2098,31 +2373,38 @@ int main() {
                             cBoard.loadFromFileNC(L"./start.txt");
                             connection = nullptr;
                         } else if (res==2) {
+                            cBoard.bot = false;
                             cBoard.loadFromFileNC(L"./start.txt");
                             connection = std::make_unique<Server>();
+                            std::cout << "server starting on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
+                            std::cout << "server starting on " << static_cast<Server*>(connection.get())->get_global_ip() << " global address" << std::endl;
                             if (connection->start(8080)==0) {
                                 connection->listen(cBoard);
                                 cBoard.player_color = 0;
-                                std::cout << "server start on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
-                                std::cout << "server start on " << sf::IpAddress::getPublicAddress(sf::seconds(3)).toString() << "global address" << std::endl;
                             } else {
                                 connection = nullptr;
+                                cBoard.player_color = -1;
                             }
                         } else if (res==3) {
+                            cBoard.bot = false;
                             cBoard.loadFromFileNC(L"./start.txt");
                             std::string str = getString("input ip", L"Введите ip сервера", window);
                             sf::IpAddress address(str);
                             bool end = false;
                             if (address == sf::IpAddress::None) {
-                                bool end = true; 
+                                end = true; 
                             }
                             if (!end) {
                                 connection = std::make_unique<Client>(str);
                                 connection->start(8080);
                                 connection->listen(cBoard);
-                                cBoard.player_color = 1;
+                                cBoard.player_color = 0;
+                            } else {
+                                cBoard.player_color = -1;
                             }
                         }
+                    } else if (event.key.control && event.key.code == sf::Keyboard::H) {
+                        showHelp();
                     }
                 } else if (event.type==sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left && (event.mouseButton.y>std::min(width, height) || event.mouseButton.x>std::min(width, height))) {
                     int button;
@@ -2138,9 +2420,7 @@ int main() {
                         }
                     } else if (button==2) { // save
                         std::optional<std::wstring> filename = SaveFileDialog(window,  L"Chess2 map file (*.ctmap)\0*.ctmap\0"
-                                                                    L"Text Files OLD (*.txt)\0*.txt\0"
-                                                                    L"Binary Files (*.bin)\0*.bin\0"
-                                                                    L"All Files (*.*)\0*.*\0", L"txt");
+                                                                    L"Text Files OLD (*.txt)\0*.txt\0", L"txt");
                         if (filename) {
                             cBoard.saveInFile(*filename);
                         }
@@ -2204,6 +2484,7 @@ int main() {
 
             window.display();
         }
+        std::ofstream("elo.bin", std::ios::binary).write(reinterpret_cast<const char*>(&elo), sizeof(elo));
     // } catch (const std::bad_alloc& e) {
     //     std::cerr << "Error message: " << e.what() << std::endl;
     //     std::cin.get(); 
