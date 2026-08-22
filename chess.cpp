@@ -1,5 +1,5 @@
-// cd C:/Users/Azerty/Desktop/Программы/filescpp; g++ chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -lsfml-graphics -lsfml-window -lsfml-system -lsfml-network -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -lole32 -loleaut32 -O3 -fopenmp -std=c++20
-// cd C:/Users/Azerty/Desktop/Программы/filescpp ; C:\Users\Azerty\AppData\Local\Android\Sdk\ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe --target=x86_64-w64-mingw32 chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -I C:\Users\Azerty\Downloads\mingw64\include -L C:\Users\Azerty\Downloads\mingw64\lib -lsfml-graphics -lsfml-window -lsfml-system -lsfml-network -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -lole32 -loleaut32 -O3 -ffast-math -ffp-contract=fast -funroll-loops -lwinpthread -fno-exceptions -fno-rtti -std=c++20
+// cd C:/Users/Azerty/Desktop/Программы/filescpp; g++ chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -lsfml-graphics -lsfml-window -lsfml-system -lsfml-network -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -lole32 -loleaut32 -O3 -fopenmp -std=c++20 -lws2_32
+// cd C:/Users/Azerty/Desktop/Программы/filescpp ; C:\Users\Azerty\AppData\Local\Android\Sdk\ndk\28.2.13676358\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe --target=x86_64-w64-mingw32 chess.cpp -o chess.exe -I c:\Users\Azerty\Downloads\SFML-2.6.1/include -L c:\Users\Azerty\Downloads\SFML-2.6.1/lib -I C:\Users\Azerty\Downloads\mingw64\include -L C:\Users\Azerty\Downloads\mingw64\lib -lsfml-graphics -lsfml-window -lsfml-system -lsfml-network -lopengl32 -lwinmm -lgdi32 -lcomdlg32 -lole32 -loleaut32 -O3 -ffast-math -ffp-contract=fast -funroll-loops -lwinpthread -fno-exceptions -fno-rtti -std=c++20 -lws2_32
 #include <SFML/Graphics.hpp>
 #include <SFML/Network.hpp>
 
@@ -23,9 +23,58 @@
 #include <x86intrin.h>
 #include <comutil.h>
 #include "el_lange/el_alocator.cpp"
-#include "graphs.hpp"
 #include "libs/serialize.cpp"
+#include "libs/countbytes.hpp"
+#include <fcntl.h>
 int elo = []() { int elo; std::ifstream("elo.bin", std::ios::binary).read(reinterpret_cast<char*>(&elo), 4); return elo; }();
+struct VersionCtmap {
+    int max; // x.0.0+
+    int avg; // y.x.0+
+    int min; // версии во время разработки (beta и alpha даже не выпушенные)
+    VersionCtmap(int max2, int avg2, int min2): max(max2+9), avg(avg2), min(min2) {}
+    bool operator==(VersionCtmap ver2) const {
+        return max==ver2.max && avg==ver2.avg && min==ver2.min;
+    }
+    #define logic_operator(op1, op2, val) bool operator op2 (VersionCtmap ver2) const {\
+        if (max op1 ver2.max) {\
+            return true;\
+        } else if (max == ver2.max) {\
+            if (avg op1 ver2.avg) {\
+                return true;\
+            } else if (avg == ver2.avg) {\
+                if (min op1 ver2.min) {\
+                    return true;\
+                } else if (min==ver2.min) {\
+                    return val;\
+                }\
+            }\
+        }\
+        return false;\
+    }
+    logic_operator(<, <, false)
+    logic_operator(>, >, false)
+    logic_operator(<, <=, true)
+    logic_operator(>, >=, true)
+    bool inVersionInterval(VersionCtmap vmin, VersionCtmap vmax) const {
+        return *this>=vmin && *this<=vmax;
+    }
+};
+struct ChessVersion {
+    int max;
+    int avg;
+    int min;
+    int in_development_ver;
+    std::wstring toWString() const {
+        return L"v"+std::to_wstring(max)+L"."+std::to_wstring(avg)+L"."+std::to_wstring(min);
+    }
+    std::string toString() const {
+        return "v"+std::to_string(max)+"."+std::to_string(avg)+"."+std::to_string(min);
+    }
+    VersionCtmap toVerCtmap() const {
+        return {max, avg, in_development_ver};
+    }
+};
+const ChessVersion currentChessVer = {4, 0, 0, 1};
 // --- Универсальное объявление интерфейсов Windows UPnP для Clang и GCC ---
 struct IStaticPortMapping : public IDispatch {
     virtual HRESULT STDMETHODCALLTYPE get_ExternalPort(long *pVal) = 0;
@@ -75,25 +124,37 @@ inline int8_t abs(int8_t x, bool y) {
 }
 template <typename T, int sizex, int sizey>
 class Array2D {
-private:
-    T data[sizex*sizey];
 public:
+    T data[sizex*sizey];
     Array2D() = default;
     inline T& operator()(int indexx, int indexy) {
+        // if (indexx>=sizex || indexy>= sizey || indexx<0 || indexy<0) {
+        //     exit(1);
+        // }
         return data[indexy*sizex+indexx];
     }
 
     inline const T& operator()(int indexx, int indexy) const {
+        // if (indexx>=sizex || indexy>= sizey || indexx<0 || indexy<0) {
+        //     exit(1);
+        // }
         return data[indexy*sizex+indexx];
     }
 
     inline T& operator()(int indexx) {
+        // if (indexx<0 || indexx>=sizex*sizey) {
+        //     exit(1);
+        // }
         return data[indexx];
     }
 
     inline const T& operator()(int indexx) const {
+        // if (indexx<0 || indexx>=sizex*sizey) {
+        //     exit(1);
+        // }
         return data[indexx];
     }
+    auto operator<=>(const Array2D<T, sizex, sizey>&) const = default;
 };
 class Anim {
 private:
@@ -215,6 +276,8 @@ struct Textures_struct {
 
     sf::Texture Go_Server_img;
     sf::Texture Connect_img;
+
+    sf::Texture Settings_img;
     Textures_struct() = default;
     bool load() {
         if (!King_img.loadFromFile("chess_imgs/King.png") || 
@@ -229,12 +292,30 @@ struct Textures_struct {
             !You_vs_Online_Player_img.loadFromFile("chess_imgs/You_vs_Online_Player.png") ||
 
             !Go_Server_img.loadFromFile("chess_imgs/Go_Server.png") ||
-            !Connect_img.loadFromFile("chess_imgs/Connect.png")
+            !Connect_img.loadFromFile("chess_imgs/Connect.png") ||
+            !Settings_img.loadFromFile("chess_imgs/Settings.png")
         ) {
             std::cerr << "don't found all imgs :(" << std::endl;
             return false;
         }
+        setSmooth(true);
         return true;
+    }
+    void setSmooth(bool smooth_val) {
+        King_img.setSmooth(smooth_val);
+        Queen_img.setSmooth(smooth_val);
+        Bishop_img.setSmooth(smooth_val);
+        Knight_img.setSmooth(smooth_val);
+        Pawn_img.setSmooth(smooth_val);
+        One_vs_One_img.setSmooth(smooth_val);
+        You_vs_Bot_img.setSmooth(smooth_val);
+        You_vs_Online_Player_img.setSmooth(smooth_val);
+        Go_Server_img.setSmooth(smooth_val);
+        Connect_img.setSmooth(smooth_val);
+        Settings_img.setSmooth(smooth_val);
+    }
+    bool isSmooth() const {
+        return King_img.isSmooth();
     }
     const sf::Texture* getTexture(figureType f) {
         switch (abs(f.value)) {
@@ -508,8 +589,194 @@ int get_random(int a, int b) {
     return std::uniform_int_distribution<int>{a, b}(g);
 }
 const std::vector<figureType> ftcf = {figureType::Queen, figureType::Knight, figureType::Rook, figureType::Bishop};
+struct Sboard {
+    Array2D<figure, 8, 8> board;
+    std::pair<uint8_t, uint8_t> ceil_capture = {255, 255};
+    bool ccolor = true;
+    bool operator==(const Sboard& other) const noexcept {
+        if (ccolor != other.ccolor) return false;
+        if (ceil_capture != other.ceil_capture) return false;
+        constexpr size_t board_bytes = sizeof(board.data); 
+        return std::memcmp(&board.data, &other.board.data, board_bytes) == 0;
+    }
+};
+namespace std {
+    template<>
+    struct hash<Sboard> {
+        size_t operator()(const Sboard& sboard) const noexcept {
+            // Константы для 64-битного FNV-1a
+            const uint64_t fnv_prime = 0x100000001b3ULL;
+            const uint64_t fnv_offset_basis = 0xcbf29ce484222325ULL;
+            
+            uint64_t hash_value = fnv_offset_basis;
+
+            // ИСПРАВЛЕНО: Берем адрес самого массива &sboard.board.data, 
+            // чтобы reinterpret_cast корректно привел его к указателю на байты
+            const uint8_t* board_bytes = reinterpret_cast<const uint8_t*>(&sboard.board.data);
+            size_t board_size = sizeof(sboard.board.data); 
+            
+            // Хэшируем весь массив доски
+            for (size_t i = 0; i < board_size; ++i) {
+                hash_value ^= (uint8_t)board_bytes[i];
+                hash_value *= fnv_prime;
+            }
+
+            // Хэшируем ceil_capture.first
+            hash_value ^= sboard.ceil_capture.first;
+            hash_value *= fnv_prime;
+
+            // Хэшируем ceil_capture.second
+            hash_value ^= sboard.ceil_capture.second;
+            hash_value *= fnv_prime;
+
+            // Хэшируем ccolor
+            hash_value ^= static_cast<uint8_t>(sboard.ccolor);
+            hash_value *= fnv_prime;
+
+            return static_cast<size_t>(hash_value);
+        }
+    };
+}
+int get(const std::unordered_map<Sboard, int>& transposition_table, const Sboard& current_board) {
+    auto it = transposition_table.find(current_board);
+    if (it != transposition_table.end()) {
+        return it->second;
+    }
+    return -200;
+}
+VersionCtmap getVerCtmapString(const std::vector<uint8_t>& content) {
+    if (figure(figureType(content[4])).checkValidity() && (content.size()-4)%7==0) {
+        return VersionCtmap(1, 4, 0);
+    } else if (figure(figureType(content[4])).checkValidity() && (content.size()-4)%10==0) {
+        return VersionCtmap(4, 0, 0);
+    } else {
+        return VersionCtmap(content[0]-9, content[1], content[2]);
+    }
+}
+void addVerInCtmapString(std::vector<uint8_t>& content, VersionCtmap ver) {
+    content.insert(content.begin(), ver.max);
+    content.insert(content.begin()+1, ver.avg);
+    content.insert(content.begin()+2, ver.min);
+}
+void deleteVerInCtmapString(std::vector<uint8_t>& content) {
+    content.erase(content.begin(), content.begin()+3);
+}
+VersionCtmap maxUpVer(VersionCtmap ver) {
+    if (ver.inVersionInterval(VersionCtmap(4, 0, 0), currentChessVer.toVerCtmap())) {
+        return currentChessVer.toVerCtmap();
+    } else if (ver.inVersionInterval(VersionCtmap(1, 4, 0), VersionCtmap(3, 0, 0))) {
+        return VersionCtmap(3, 0, 0);
+    } else if (ver.inVersionInterval(VersionCtmap(1, 0, 0), VersionCtmap(1, 3, 0))) {
+        return VersionCtmap(1, 3, 0);
+    }
+}
+void toNeedVerCtmapString(std::vector<uint8_t>& content, VersionCtmap cVer, VersionCtmap toVer) {
+    toVer = maxUpVer(toVer);
+    while (true) {
+        cVer = maxUpVer(cVer);
+        if (cVer==toVer) {
+            return;
+        }
+        if (cVer<toVer) {
+            uint32_t size = content[0] | content[1]<<8 | content[2]<<16 | content[3]<<24;
+            if (cVer==VersionCtmap(3, 0, 0)) {
+                cVer = VersionCtmap(4, 0, 0);
+                uint32_t size_of_bytes = size*10;
+                for (int i = 4; i!=4+size_of_bytes; i+=10) {
+                    content.insert(content.begin()+(i+7), 255);
+                    content.insert(content.begin()+(i+8), 255);
+                    content.insert(content.begin()+(i+9), 0);
+                }
+            } else if (cVer==VersionCtmap(1, 3, 0)) {
+                cVer = VersionCtmap(3, 0, 0);
+                uint32_t size_of_bytes = size*7;
+                for (int i = 4; i!=4+size_of_bytes; i+=7) {
+                    if (abs((int8_t)content[i])==40) {
+                        if (abs((int8_t)content[i])==content[i]) {
+                            content[i] = 8;
+                        } else {
+                            content[i] = (int8_t)-8;
+                        }
+                    }
+                    if (abs((int8_t)content[i+1])==40) {
+                        if (abs((int8_t)content[i+1])==content[i+1]) {
+                            content[i+1] = 8;
+                        } else {
+                            content[i+1] = (int8_t)-8;
+                        }
+                    }
+                    if (abs((int8_t)content[i+2])==40) {
+                        if (abs((int8_t)content[i+2])==content[i+2]) {
+                            content[i+2] = 8;
+                        } else {
+                            content[i+2] = (int8_t)-8;
+                        }
+                    }
+                }
+            }
+        } else {
+            uint32_t size = content[0] | content[1]<<8 | content[2]<<16 | content[3]<<24;
+            if (cVer>=VersionCtmap(4, 0, 0)) {
+                cVer = VersionCtmap(3, 0, 0);
+                uint32_t size_of_bytes = size*7;
+                for (int i = 4; i!=4+size_of_bytes; i+=7) {
+                    content.erase(content.begin()+(i+7), content.begin()+(i+10));
+                }
+            } else if (cVer==VersionCtmap(3, 0, 0)) {
+                cVer = VersionCtmap(1, 3, 0);
+                uint32_t size_of_bytes = size*7;
+                for (int i = 4; i!=4+size_of_bytes; i+=7) {
+                    if (abs((int8_t)content[i])==8) {
+                        if (abs((int8_t)content[i])==content[i]) {
+                            content[i] = 40;
+                        } else {
+                            content[i] = (int8_t)-40;
+                        }
+                    }
+                    if (abs((int8_t)content[i+1])==8) {
+                        if (abs((int8_t)content[i+1])==content[i+1]) {
+                            content[i+1] = 40;
+                        } else {
+                            content[i+1] = (int8_t)-40;
+                        }
+                    }
+                    if (abs((int8_t)content[i+2])==8) {
+                        if (abs((int8_t)content[i+2])==content[i+2]) {
+                            content[i+2] = 40;
+                        } else {
+                            content[i+2] = (int8_t)-40;
+                        }
+                    }
+                }
+            }
+        }
+        cVer =  maxUpVer(cVer);
+    }
+}
+void toNewVerCtmapString(std::vector<uint8_t>& content, VersionCtmap cVer) {
+    toNeedVerCtmapString(content, cVer, currentChessVer.toVerCtmap());
+}
+template <typename T>
+size_t get_dyn_overhead(const T& val) {
+    if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::wstring>) {
+        return (val.capacity() > 15) ? val.capacity() * sizeof(typename T::value_type) : 0;
+    }
+    return 0;
+}
+
+template <typename K, typename V>
+size_t get_unordered_map_heap_size(const std::unordered_map<K, V>& map) {
+    size_t total_memory = map.bucket_count() * sizeof(void*);
+    
+    for (const auto& [key, val] : map) {
+        size_t node_size = 16 + sizeof(K) + sizeof(V) + get_dyn_overhead(key) + get_dyn_overhead(val);
+        total_memory += (node_size + 7) & ~7; // Выравнивание до 8 байт
+    }
+    return total_memory;
+}
 struct Board {
     Array2D<figure, 8, 8> board;
+    std::pair<uint8_t, uint8_t> ceil_capture = {255, 255};
     bool ccolor = true;
     uint64_t num = 0;
     std::vector<Anim> animations;
@@ -521,10 +788,10 @@ struct Board {
     bool no_rotate_screen = true;
     bool bot_thinking = false;
     int victory_type = 0; // 0 - нет. 1 - победа белых. 2 - ничья. 3 - победа чёрных
-    std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>> history;
+    std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>>> history;
     int history_pos = 0;
     std::optional<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>> hint;
-    std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>> history_hint;
+    std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>>> history_hint;
     int bot_depth = 7;
     int player_color = -1;
 
@@ -591,13 +858,15 @@ struct Board {
             {
             int step = (mcolor?-1:1);
             int ay = y-step;
-            //add_stepifa(x-1, ay) else if ((x-1)>0 && ((ay==3 && f.getColor()) || (ay==4 && !f.getColor())) && can_capture_on_way(x-1, (int)f.getColor())) steps.emplace_back(x-1, ay);
-            add_stepifa(x-1, ay);
+            add_stepifa(x-1, ay) else if ((uint8_t)(x-1)<8 && (uint8_t)(ay)<8 && ceil_capture.first==x-1 && ceil_capture.second==ay) {
+                steps.emplace_back(x-1, ay);
+            };
             add_stepifna(x, ay, if ((y==6 && !f.getColor()) || (y==1 && f.getColor())) {
                 add_stepifna(x, y-step-step,);
             });
-            //add_stepifa(x+1, ay) else if ((x+1)<8 && ((ay==3 && f.getColor()) || (ay==4 && !f.getColor())) && can_capture_on_way(x+1, (int)f.getColor())) steps.emplace_back(x+1, ay);
-            add_stepifa(x+1, ay);
+            add_stepifa(x+1, ay) else if ((uint8_t)(x+1)<8 && (uint8_t)(ay)<8 && ceil_capture.first==x+1 && ceil_capture.second==ay) {
+                steps.emplace_back(x+1, ay);
+            };
             }
             return steps;
         case figureType::Rook.value:
@@ -689,6 +958,12 @@ struct Board {
                             colOutLine = sf::Color::Red;
                         }
                     }
+                } 
+                else if (board(cx, cy).type==figureType::King && board(cx, cy).getColor()==ccolor && check_pic(ccolor)) {
+                    colOutLine = sf::Color::Red;
+                }
+                 else if (history_pos!=0 && ((history[history_pos-1].second.first.first.first==cx && history[history_pos-1].second.first.first.second==cy) || (history[history_pos-1].second.first.second.first==cx && history[history_pos-1].second.first.second.second==cy))) {
+                    colOutLine = sf::Color(255, 215, 0, 0.45*255);
                 }
 
                 if (colOutLine!=sf::Color::White) {
@@ -834,40 +1109,135 @@ struct Board {
             window.draw(text);
         }
     }
-    std::pair<std::pair<figure, figure>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> take_a_step(std::pair<uint8_t, uint8_t> pos, std::pair<uint8_t, uint8_t> step) {
+    std::pair<std::pair<figure, figure>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> take_a_step(std::pair<uint8_t, uint8_t> pos, std::pair<uint8_t, uint8_t> step) {
+        std::pair<uint8_t, uint8_t> pceil_capture = ceil_capture;
         figure af = board(step.first, step.second);
         figure mf = board(pos.first, pos.second);
         board(step.first, step.second) = mf;
         board(pos.first, pos.second).type = figureType::Empty;
-        return {{mf, af}, {pos, step}};
+        bool use_capture = false;
+        if (mf.type==figureType::Pawn && pos.first!=step.first && step.first==ceil_capture.first && step.second==ceil_capture.second) {
+            int step_n = (mf.getColor()?-1:1);
+            board(ceil_capture.first, ceil_capture.second+step_n).type = figureType::Empty;
+            use_capture = true;
+        }
+        if (mf.type==figureType::Pawn && abs(pos.second-step.second)==2) {
+            ceil_capture = step;
+            int step_n = (mf.getColor()?-1:1);
+            ceil_capture.second+=step_n;
+        } else {
+            ceil_capture = {255, 255};
+        }
+        return {{mf, af}, {{pos, step}, {pceil_capture, use_capture}}};
     }
     void take_a_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
         board(data.second.second.first, data.second.second.second) = data.first.second.second;
         board(data.second.first.first, data.second.first.second).type = figureType::Empty;
-        
+        if (data.first.first.type==figureType::Pawn && data.second.first.first!=data.second.second.first && data.second.second.first==ceil_capture.first && data.second.second.second==ceil_capture.second) {
+            int step = (data.first.first.getColor()?-1:1);
+            board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+        }
+        if (data.first.first.type==figureType::Pawn && abs(data.second.first.second-data.second.second.second)==2) {
+            ceil_capture = data.second.first;
+            int step = (data.first.first.getColor()?-1:1);
+            ceil_capture.second-=step;
+        } else {
+            ceil_capture = {255, 255};
+        }
+    }
+    void take_a_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
+        board(data.second.first.second.first, data.second.first.second.second) = data.first.second.second;
+        board(data.second.first.first.first, data.second.first.first.second).type = figureType::Empty;
+        if (data.first.first.type==figureType::Pawn && data.second.first.first.first!=data.second.first.second.first && data.second.first.second.first==ceil_capture.first && data.second.first.second.second==ceil_capture.second) {
+            int step = (data.first.first.getColor()?-1:1);
+            board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+        }
+        if (data.first.first.type==figureType::Pawn && abs(data.second.first.first.second-data.second.first.second.second)==2) {
+            ceil_capture = data.second.first.first;
+            int step = (data.first.first.getColor()?-1:1);
+            ceil_capture.second-=step;
+        } else {
+            ceil_capture = {255, 255};
+        }
     }
     void take_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
         board(data.second.second.first, data.second.second.second) = data.first.second.second;
         board(data.second.first.first, data.second.first.second).type = figureType::Empty;
+        if (data.first.first.type==figureType::Pawn && data.second.first.first!=data.second.second.first && data.second.second.first==ceil_capture.first && data.second.second.second==ceil_capture.second) {
+            int step = (data.first.first.getColor()?-1:1);
+            board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+        }
+        if (data.first.first.type==figureType::Pawn && abs(data.second.first.second-data.second.second.second)==2) {
+            ceil_capture = data.second.first;
+            int step = (data.first.first.getColor()?-1:1);
+            ceil_capture.second-=step;
+        } else {
+            ceil_capture = {255, 255};
+        }
         animations.emplace_back(0.3, data.second.first, data.second.second);
+    }
+    void take_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
+        board(data.second.first.second.first, data.second.first.second.second) = data.first.second.second;
+        board(data.second.first.first.first, data.second.first.first.second).type = figureType::Empty;
+        if (data.first.first.type==figureType::Pawn && data.second.first.first.first!=data.second.first.second.first && data.second.first.second.first==ceil_capture.first && data.second.first.second.second==ceil_capture.second) {
+            int step = (data.first.first.getColor()?-1:1);
+            board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+        }
+        if (data.first.first.type==figureType::Pawn && abs(data.second.first.first.second-data.second.first.second.second)==2) {
+            ceil_capture = data.second.first.first;
+            int step = (data.first.first.getColor()?-1:1);
+            ceil_capture.second-=step;
+        } else {
+            ceil_capture = {255, 255};
+        }
+        animations.emplace_back(0.3, data.second.first.first, data.second.first.second);
     }
     void take_a_step_anim(std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> data) {
         board(data.first.second.first, data.first.second.second) = data.second;
         board(data.first.first.first, data.first.first.second).type = figureType::Empty;
+        if (data.second.type==figureType::Pawn && data.first.first.first!=data.first.second.first && data.first.second.first==ceil_capture.first && data.first.second.second==ceil_capture.second) {
+            int step = (data.second.getColor()?-1:1);
+            board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+        }
+        if (data.second.type==figureType::Pawn && abs(data.first.first.second-data.first.second.second)==2) {
+            ceil_capture = data.first.first;
+            int step = (data.second.getColor()?-1:1);
+            ceil_capture.second-=step;
+        } else {
+            ceil_capture = {255, 255};
+        }
         animations.emplace_back(0.3, data.first.first, data.first.second);
     }
-    void untake_a_step(std::pair<std::pair<figure, figure>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
-        board(data.second.first.first, data.second.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
-        board(data.second.second.first, data.second.second.second) = data.first.second; // создаём съединую фигуру/пустое поле
+    void untake_a_step(std::pair<std::pair<figure, figure>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
+        board(data.second.first.first.first, data.second.first.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
+        board(data.second.first.second.first, data.second.first.second.second) = data.first.second; // создаём съединую фигуру/пустое поле
+        ceil_capture = data.second.second.first;
+        if (data.second.second.second) {
+            int step = (data.first.first.getColor()?-1:1);
+            board(data.second.first.second.first, data.second.first.second.second+step).type = figureType::Pawn;
+            board(data.second.first.second.first, data.second.first.second.second+step).setColor(!data.first.first.getColor());
+        }
     }
-    void untake_a_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
-        board(data.second.first.first, data.second.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
-        board(data.second.second.first, data.second.second.second) = data.first.second.first; // создаём съединую фигуру/пустое поле
+    void untake_a_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
+        board(data.second.first.first.first, data.second.first.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
+        board(data.second.first.second.first, data.second.first.second.second) = data.first.second.first; // создаём съединую фигуру/пустое поле
+        ceil_capture = data.second.second.first;
+        if (data.second.second.second) {
+            int step = (data.first.first.getColor()?-1:1);
+            board(data.second.first.second.first, data.second.first.second.second+step).type = figureType::Pawn;
+            board(data.second.first.second.first, data.second.first.second.second+step).setColor(!data.first.first.getColor());
+        }
     }
-    void untake_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
-        board(data.second.first.first, data.second.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
-        board(data.second.second.first, data.second.second.second) = data.first.second.first; // создаём съединую фигуру/пустое поле
-        animations.emplace_back(0.3, data.second.second, data.second.first);
+    void untake_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
+        board(data.second.first.first.first, data.second.first.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
+        board(data.second.first.second.first, data.second.first.second.second) = data.first.second.first; // создаём съединую фигуру/пустое поле
+        ceil_capture = data.second.second.first;
+        if (data.second.second.second) {
+            int step = (data.first.first.getColor()?-1:1);
+            board(data.second.first.second.first, data.second.first.second.second+step).type = figureType::Pawn;
+            board(data.second.first.second.first, data.second.first.second.second+step).setColor(!data.first.first.getColor());
+        }
+        animations.emplace_back(0.3, data.second.first.second, data.second.first.first);
     }
     int check_end(bool color) { // 0 - нет. 1 - мат. 2 - ничья
         bool need_check = false;
@@ -926,15 +1296,55 @@ struct Board {
             return 2;
         }
     }
+    // bool check_pic(bool ccolor) {
+    //     for (int cy = 0; cy!=8; cy++) {
+    //         for (int cx = 0; cx!=8; cx++) {
+    //             if (board(cx, cy).getColor()!=ccolor) {
+    //                 for (auto step: get_steps(cx, cy)) {
+    //                     figure f = board(step.first, step.second);
+    //                     if (f.type==figureType::King && f.getColor()==ccolor) {
+    //                         return true;
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     return false;
+    // }
     bool check_pic(bool ccolor) {
-        for (int cy = 0; cy!=8; cy++) {
-            for (int cx = 0; cx!=8; cx++) {
-                if (board(cx, cy).getColor()!=ccolor) {
-                    for (auto step: get_steps(cx, cy)) {
-                        figure f = board(step.first, step.second);
-                        if (f.type==figureType::King && f.getColor()==ccolor) {
-                            return true;
-                        }
+        int king_x = -1, king_y = -1;
+        for (int cy = 0; cy < 8; cy++) {
+            for (int cx = 0; cx < 8; cx++) {
+                if (board(cx, cy).type == figureType::King && board(cx, cy).getColor() == ccolor) {
+                    king_x = cx;
+                    king_y = cy;
+                    break;
+                }
+            }
+            if (king_x != -1) break;
+        }
+        if (king_x == -1) return false;
+        for (int cy = 0; cy < 8; cy++) {
+            for (int cx = 0; cx < 8; cx++) {
+                figure f = board(cx, cy);
+                if (f.type == figureType::Empty || f.getColor() == ccolor) {
+                    continue;
+                }
+                int dx = abs(cx - king_x);
+                int dy = abs(cy - king_y);
+                if (f.type == figureType::Rook && cx != king_x && cy != king_y) continue;
+                if (f.type == figureType::Bishop && dx != dy) continue;
+                if (f.type == figureType::Queen && cx != king_x && cy != king_y && dx != dy) continue;
+                if (f.type == figureType::Knight && !((dx == 1 && dy == 2) || (dx == 2 && dy == 1))) continue;
+                if (f.type == figureType::King && (dx > 1 || dy > 1)) continue;
+                if (f.type == figureType::Pawn) {
+                    if (dx != 1) continue; 
+                    int pawn_step = (f.getColor() ? -1 : 1); 
+                    if (king_y != cy - pawn_step) continue; 
+                }
+                for (const auto& step : get_steps(cx, cy)) {
+                    if (step.first == king_x && step.second == king_y) {
+                        return true;
                     }
                 }
             }
@@ -979,7 +1389,7 @@ struct Board {
             __VA_ARGS__\
         }\
     }
-    int make_move_calc(bool color, int depth = 8, int alpha = -1000000, int beta = 1000000, int score_cache=0) {
+    int make_move_calc(bool color, std::unordered_map<Sboard, int>& table_transpositions, int depth = 8, int alpha = -1000000, int beta = 1000000, int score_cache=0) {
         int best_score = -1000000;
         // parallel_if(depth==6, Board board_copy = *this;, 0, 8, cy, 
         // std::vector<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>, LinearPoolAllocator<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>>> steps_all;
@@ -990,66 +1400,84 @@ struct Board {
         }
         bool ncolor = !color;
         bool has_moves = false;
-        for (int cy = 0; cy != 8; cy++) {
-            for (int cx = 0; cx != 8; cx++) {
-                figure f = board(cx, cy);
-                if (f.type.value != figureType::Empty.value && f.getColor() == color) {
-                    bool change_to_pawn = abs(f.type.value, ncolor)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
-                    auto steps = get_steps(cx, cy);
-                    for (auto step : steps) {
-                        has_moves = true;
-                        int score = 0;
-                        int new_score_cache = score_cache;
-                        figure af = board(step.first, step.second);
-                        bool kill_king = af.type.value == valNoMeKing;
-                        if (!kill_king) {
-                            new_score_cache += abs(af.type.value, color);
-                        }
-                        
-                        auto data = take_a_step({cx, cy}, step);
-                        #define two_for(var, ifvar, ...) if (var) {for (int i = 0; i!=ifvar; i++) {__VA_ARGS__}} else {int i = 0; __VA_ARGS__}
-                        two_for(change_to_pawn, 4, 
-                            if (change_to_pawn) {
-                                board(step.first, step.second).setType(ftcf[i]);
-                                new_score_cache += ftcf[i].value-1;
+        int rscore;
+        if (depth>3 && (rscore = get(table_transpositions, *(Sboard*)this))!=-200) {
+            return rscore;
+        } else {
+            for (int cy = 0; cy != 8; cy++) {
+                for (int cx = 0; cx != 8; cx++) {
+                    figure f = board(cx, cy);
+                    if (f.type.value != figureType::Empty.value && f.getColor() == color) {
+                        bool change_to_pawn = abs(f.type.value, ncolor)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
+                        auto steps = get_steps(cx, cy);
+                        for (auto step : steps) {
+                            //std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            has_moves = true;
+                            int score = 0;
+                            int new_score_cache = score_cache;
+                            figure af = board(step.first, step.second);
+                            bool kill_king = af.type.value == valNoMeKing;
+                            if (!kill_king) {
+                                new_score_cache += abs(af.type.value, color);
                             }
-                            num++;
-                            if (kill_king) {
-                                // score = 900000 + depth*100 + calc_score(color);
-                                score = 900000 + depth*100 + new_score_cache;
-                            } else {
-                                if (depth == 1) {
-                                    //score = calc_score(color);
-                                    score = new_score_cache;
-                                } else {
-                                    score = -make_move_calc(ncolor, depth - 1, -beta, -alpha, -new_score_cache);
+                            auto data = take_a_step({cx, cy}, step);
+                            //std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            #define two_for(var, ifvar, ...) if (var) {for (int i = 0; i!=ifvar; i++) {__VA_ARGS__}} else {int i = 0; __VA_ARGS__}
+                            two_for(change_to_pawn, 4, 
+                                if (change_to_pawn) {
+                                    board(step.first, step.second).setType(ftcf[i]);
+                                    new_score_cache += ftcf[i].value-1;
+                                    if (i!=0) {
+                                        new_score_cache -= ftcf[i-1].value-1;
+                                    }
                                 }
-                            }
-                            if (score > best_score) {
-                                best_score = score;
-                            }
-                            
-                            if (best_score > alpha) {
-                                alpha = best_score;
-                            }
-                            
-                            if (alpha >= beta) {
-                                untake_a_step(data);
-                                return best_score; 
-                            })
-                        #undef two_for
-                        untake_a_step(data);
-                    }
-                }   
-            }        
-        }
-        if (!has_moves) {
-            best_score = -1000;
+                                num++;
+                                if (kill_king) {
+                                    // score = 900000 + depth*100 + calc_score(color);
+                                    score = 900000 + depth*100 + new_score_cache;
+                                } else {
+                                    if (depth == 1) {
+                                        //score = calc_score(color);
+                                        score = new_score_cache;
+                                    } else {
+                                        score = -make_move_calc(ncolor, table_transpositions, depth - 1, -beta, -alpha, -new_score_cache);
+                                    }
+                                }
+                                if (score > best_score) {
+                                    best_score = score;
+                                }
+                                
+                                if (best_score > alpha) {
+                                    alpha = best_score;
+                                }
+                                
+                                if (alpha >= beta) {
+                                    untake_a_step(data);
+                                    if (depth>3) {
+                                        table_transpositions.try_emplace(*(Sboard*)this, best_score);
+                                    }
+                                    //std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                                    return best_score; 
+                                })
+                            #undef two_for
+                            untake_a_step(data);
+                            //std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        }
+                    }   
+                }        
+            }
+            if (!has_moves) {
+                best_score = -1000;
+            }
+            if (depth>3) {
+                table_transpositions.try_emplace(*(Sboard*)this, best_score);
+            }
         }
         return best_score;
     }
     std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> make_move(bool color, int depth = 8, int score_cache=0) {
         num = 0;
+        std::unordered_map<Sboard, int> table_transpositions;
         int best_score = -1000000;
         //std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> best_step;
         std::vector<std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>> best_steps;
@@ -1069,6 +1497,7 @@ struct Board {
                 if (f.type.value != figureType::Empty.value && f.getColor() == color) {
                     auto steps = get_steps(cx, cy);
                     for (auto step : steps) {
+                        //std::this_thread::sleep_for(std::chrono::milliseconds(100));
                         has_moves = true;
                         int score = 0;
                         int new_score_cache = score_cache;
@@ -1079,11 +1508,15 @@ struct Board {
                         }
                         
                         auto data = take_a_step({cx, cy}, step);
+                        //std::this_thread::sleep_for(std::chrono::milliseconds(100));
                         #define two_for(var, ifvar, ...) if (var) {for (int i = 0; i!=ifvar; i++) {__VA_ARGS__}} else {int i = 0; __VA_ARGS__}
                         two_for(change_to_pawn, 4, 
                             if (change_to_pawn) {
                                 board(step.first, step.second).setType(ftcf[i]);
                                 new_score_cache += ftcf[i].value-1;
+                                if (i!=0) {
+                                    new_score_cache -= ftcf[i-1].value-1;
+                                }
                             }
                             num++;
                             if (kill_king) {
@@ -1094,7 +1527,7 @@ struct Board {
                                     //score = calc_score(color);
                                     score = new_score_cache;
                                 } else {
-                                    score = -make_move_calc(ncolor, depth - 1, -1000000, 1000000, -new_score_cache);
+                                    score = -make_move_calc(ncolor, table_transpositions, depth - 1, -1000000, 1000000, -new_score_cache);
                                 }
                             }
                             if (score > best_score) {
@@ -1107,6 +1540,7 @@ struct Board {
                         )
                         #undef two_for
                         untake_a_step(data);
+                        //std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }
                 }   
             }        
@@ -1118,20 +1552,26 @@ struct Board {
             int rnum = get_random(0, best_steps.size()-1);
             best_step = best_steps[rnum];
         }
-        
+        std::cout.flush(); 
+        _setmode(_fileno(stdout), _O_U16TEXT);
+        std::wcout << L"Бот Использовал: " << CountBytes(get_unordered_map_heap_size(table_transpositions)).toString1valW() << L"\n";
+        std::wcout.flush(); 
+        _setmode(_fileno(stdout), _O_TEXT);
+
         return {best_score, best_step};
     }
-    int calc_score_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data_step, int depth=6) {
+    int calc_score_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data_step, int depth=6) {
         int score = 0;
-        figure f = board(data_step.second.first.first, data_step.second.first.second);
-        bool kill_king = board(data_step.second.second.first, data_step.second.second.second).type == figureType::King;
+        //figure f = board(data_step.second.first.first.first, data_step.second.first.first.second);
+        bool kill_king = board(data_step.second.first.second.first, data_step.second.first.second.second).type == figureType::King;
         
         take_a_step(data_step);
         if (kill_king) {
             score = 900000 - depth*100 + calc_score(ccolor);
         } else {
+            std::unordered_map<Sboard, int> table_transpositions;
             //score = -make_move_calc(!ccolor, depth - 1, 1000000, -1000000);
-            score = -make_move_calc(!ccolor, depth - 1, 1000000, -1000000);
+            score = -make_move_calc(!ccolor, table_transpositions, depth - 1, 1000000, -1000000);
         }
         untake_a_step(data_step);
         return score;
@@ -1192,7 +1632,7 @@ struct Board {
                                 }
                                 untake_a_step(d);
                                 figure f = board(select_ceil.first, select_ceil.second);
-                                std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data = {{f, {board(step.first, step.second), f}}, {select_ceil, step}};
+                                std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data = {{f, {board(step.first, step.second), f}}, {{select_ceil, step}, {ceil_capture, false}}};
                                 if (f.type==figureType::Pawn && ((step.second==7 && f.getColor()) || (step.second==0 && !f.getColor()))) {
                                     int select = showPromotionWindow(window, {
                                         {Textures.getTexture(figureType::Queen), L"ферзь"},
@@ -1200,10 +1640,10 @@ struct Board {
                                         {Textures.getTexture(figureType::Rook), L"ладья"},
                                         {Textures.getTexture(figureType::Bishop), L"слон"},
                                     });
-                                    if (select==0) f.type=figureType::Queen;
-                                    else if (select==1) f.type=figureType::Knight;
-                                    else if (select==2) f.type=figureType::Rook;
-                                    else if (select==3) f.type=figureType::Bishop;
+                                    if (select==0) f.setType(figureType::Queen);
+                                    else if (select==1) f.setType(figureType::Knight);
+                                    else if (select==2) f.setType(figureType::Rook);
+                                    else if (select==3) f.setType(figureType::Bishop);
                                     else window.close();
                                 }
                                 if (history.size()!=history_pos) {
@@ -1213,6 +1653,18 @@ struct Board {
                                 data.first.second.second = f;
                                 board(step.first, step.second) = f;
                                 animations.emplace_back(0.3, select_ceil, step);
+                                if (data.first.first.type==figureType::Pawn && data.second.first.first.first!=data.second.first.second.first && data.second.first.second.first==ceil_capture.first && data.second.first.second.second==ceil_capture.second) {
+                                    int step = (data.first.first.getColor()?-1:1);
+                                    board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+                                    data.second.second.second = true;
+                                }
+                                if (data.first.first.type==figureType::Pawn && abs(data.second.first.first.second-data.second.first.second.second)==2) {
+                                    ceil_capture = data.second.first.first;
+                                    int step = (data.first.first.getColor()?-1:1);
+                                    ceil_capture.second-=step;
+                                } else {
+                                    ceil_capture = {255, 255};
+                                }
                                 history.insert(history.begin()+history_pos, data);
                                 history_pos++;
                                 if (connection!=nullptr) {
@@ -1242,6 +1694,7 @@ struct Board {
                                         }
                                         int K = 32; // 40 для новичков, 32 для базы
                                         elo = std::round(elo + K * (actual - expected));
+                                        std::ofstream("elo.bin", std::ios::binary).write(reinterpret_cast<const char*>(&elo), sizeof(elo));
                                     }
                                     return;
                                 }
@@ -1268,9 +1721,22 @@ struct Board {
                                         // std::cout << "steps:" << (end_bars-start_bars)/100 << "-" << (end_bars-start_bars)/80 << std::endl;
                                         std::cout << "time:" << (double)t / CLOCKS_PER_SEC << " seconds" << std::endl;
                                         std::cout << "real_steps:" << board_copy.num << std::endl;
-                                        std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {bot_step.first.first, bot_step.first.second}};
+                                        std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {{bot_step.first.first, bot_step.first.second}, {ceil_capture, false}}};
                                         board(bot_step.first.second.first, bot_step.first.second.second) = bot_step.second;
                                         board(bot_step.first.first.first, bot_step.first.first.second).type = figureType::Empty;
+                                        if (bot_data.first.first.type==figureType::Pawn && bot_data.second.first.first.first!=bot_data.second.first.second.first && bot_data.second.first.second.first==ceil_capture.first && bot_data.second.first.second.second==ceil_capture.second) {
+                                            int step = (bot_data.first.first.getColor()?-1:1);
+                                            board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+                                            bot_data.second.second.second = true;
+                                        }
+                                        if (bot_data.first.first.type==figureType::Pawn && abs(bot_data.second.first.first.second-bot_data.second.first.second.second)==2) {
+                                            ceil_capture = bot_data.second.first.first;
+                                            int step = (bot_data.first.first.getColor()?-1:1);
+                                            ceil_capture.second-=step;
+                                        } else {
+                                            ceil_capture = {255, 255};
+                                        }
+
                                         animations.emplace_back(0.3, bot_step.first.first, bot_step.first.second);
                                         // записываем в историю
                                         history.insert(history.begin()+history_pos, bot_data);
@@ -1281,12 +1747,13 @@ struct Board {
                                             // Определяем реальный результат игрока (S)
                                             double actual = 0.5;
                                             if (victory_type == 1) {
-                                                actual = (ccolor == 1) ? 1.0 : 0.0; // Победа белых
+                                                actual = ((!ccolor) == 1) ? 1.0 : 0.0; // Победа белых
                                             } else if (victory_type == 3) {
-                                                actual = (ccolor == 0) ? 1.0 : 0.0; // Победа чёрных
+                                                actual = ((!ccolor) == 0) ? 1.0 : 0.0; // Победа чёрных
                                             }
                                             int K = 32; // 40 для новичков, 32 для базы
                                             elo = std::round(elo + K * (actual - expected));
+                                            std::ofstream("elo.bin", std::ios::binary).write(reinterpret_cast<const char*>(&elo), sizeof(elo));
                                             return;
                                         }
                                         if (hint) {
@@ -1341,7 +1808,10 @@ struct Board {
             if (event.text.unicode == '?') { 
                 if (hint && bot_depth-1-(int)history_hint.size()>0 && animations.empty()) {
                     auto bot_step = hint->second;
-                    std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {bot_step.first.first, bot_step.first.second}};
+                    std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {{bot_step.first.first, bot_step.first.second}, {ceil_capture, false}}};
+                    if (bot_data.first.first.type==figureType::Pawn && abs(bot_data.second.first.first.second-bot_data.second.first.second.second)==2) {
+                        bot_data.second.second.second = true;
+                    }
                     take_a_step_anim(hint->second);
                     ccolor = !ccolor;
                     hint = make_move(ccolor, bot_depth-1-history_hint.size());
@@ -1358,7 +1828,7 @@ struct Board {
             history_hint.pop_back();
             untake_a_step_anim(bot_data);
             ccolor = !ccolor;
-            std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> bot_step = {bot_data.second, bot_data.first.second.second};
+            std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> bot_step = {bot_data.second.first, bot_data.first.second.second};
             hint = {0, bot_step};
             return;
         }
@@ -1477,8 +1947,13 @@ struct Board {
             ccolor = words[words.size()-1]=="True";
         } else if (filename.ends_with(".ctmap")) {
             loadFromFileNC(L"./start.txt");
-            uint32_t size = content[0] | content[1]<<8 | content[2]<<16 | content[3]<<24;
             //std::cout << "load:" << size << std::endl;
+            VersionCtmap ver = getVerCtmapString(content);
+            if (ver>VersionCtmap(4, 0, 0)) {
+                deleteVerInCtmapString(content);
+            }
+            toNewVerCtmapString(content, ver);
+            uint32_t size = content[0] | content[1]<<8 | content[2]<<16 | content[3]<<24;
             uint32_t size_of_bytes = size*sizeof(history[0]);
             history.resize(size);
             int j = 0;
@@ -1486,17 +1961,20 @@ struct Board {
                 history[j].first.first.type = content[i];
                 history[j].first.second.first.type = content[i+1];
                 history[j].first.second.second.type = content[i+2];
-                history[j].second.first.first = content[i+3];
-                history[j].second.first.second = content[i+4];
-                history[j].second.second.first = content[i+5];
-                history[j].second.second.second = content[i+6];
+                history[j].second.first.first.first = content[i+3];
+                history[j].second.first.first.second = content[i+4];
+                history[j].second.first.second.first = content[i+5];
+                history[j].second.first.second.second = content[i+6];
+                history[j].second.second.first.first = content[i+7];
+                history[j].second.second.first.second = content[i+8];
+                history[j].second.second.second = content[i+9];
                 j++;
             }
             
             for (auto step: history) {
                 take_a_step(step);
                 ccolor = !ccolor;
-                if (step.second.first.first>=8 || (uint8_t)step.second.first.second>=8 || step.second.second.first>=8 || (uint8_t)step.second.second.second>=8) {
+                if (step.second.first.first.first>=8 || (uint8_t)step.second.first.first.second>=8 || step.second.first.second.first>=8 || (uint8_t)step.second.first.second.second>=8) {
                     std::cout << "bad file. error: invalid step" << std::endl;
                     loadFromFileNC(L"start.txt");
                     return;
@@ -1554,10 +2032,13 @@ struct Board {
                 data[i] = history[j].first.first.type.value;
                 data[i+1] = history[j].first.second.first.type.value;
                 data[i+2] = history[j].first.second.second.type.value;
-                data[i+3] = history[j].second.first.first;
-                data[i+4] = history[j].second.first.second;
-                data[i+5] = history[j].second.second.first;
-                data[i+6] = history[j].second.second.second;
+                data[i+3] = history[j].second.first.first.first;
+                data[i+4] = history[j].second.first.first.second;
+                data[i+5] = history[j].second.first.second.first;
+                data[i+6] = history[j].second.first.second.second;
+                data[i+7] = history[j].second.second.first.first;
+                data[i+8] = history[j].second.second.first.second;
+                data[i+9] = history[j].second.second.second;
                 j++;
             }
             std::ofstream file(filename.c_str(), std::ios::binary);
@@ -1565,6 +2046,7 @@ struct Board {
                 std::cerr << "error open writen file!\n";
                 return;
             }
+            addVerInCtmapString(data, currentChessVer.toVerCtmap());
             file.write((const char*)data.data(), data.size());
             file.close();
         }
@@ -1820,16 +2302,124 @@ public:
         isPortForwarded = false;
     }
 };
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#pragma comment(lib, "ws2_32.lib")
+
+std::unique_ptr<sf::TcpSocket> EstablishP2PConnection(const std::string& remoteIp, unsigned short remotePort, unsigned short localPort, bool isHost) {
+    // === ЭТАП 1: UDP ПРОБИВ NAT ===
+    sf::UdpSocket udpSocket;
+    udpSocket.setBlocking(false); // Неблокирующий режим для цикла опроса
+
+    // Привязываем UDP к нашему локальному порту
+    if (udpSocket.bind(localPort) != sf::Socket::Done) {
+        std::cout << "[P2P] Не удалось привязать UDP к порту " << localPort << std::endl;
+        return nullptr;
+    }
+
+    sf::IpAddress remote(remoteIp);
+    std::cout << "[P2P] Старт UDP пробива... Стучимся к соседу..." << std::endl;
+
+    bool udpPunched = false;
+    int maxAttempts = 100; // Около 10 секунд общего времени
+
+    for (int i = 0; i < maxAttempts; ++i) {
+        // Отправляем пинг соседу
+        std::string pingMsg = "PUNCH";
+        udpSocket.send(pingMsg.c_str(), pingMsg.size() + 1, remote, remotePort);
+
+        // Проверяем, пришел ли ответ
+        char buffer[16]; // Создаем массив с запасом
+        std::size_t received = 0;
+        sf::IpAddress senderIp;
+        unsigned short senderPort;
+
+        // Передаем сам массив (buffer) и его максимальный размер (sizeof(buffer))
+        if (udpSocket.receive(buffer, sizeof(buffer), received, senderIp, senderPort) == sf::Socket::Done) {
+            // Безопасно добавляем нуль-терминатор в конец принятых данных
+            buffer[received] = '\0'; 
+            
+            if (std::string(buffer) == "PUNCH") {
+                std::cout << "[P2P] UDP Ответ получен от " << senderIp.toString() << ":" << senderPort << "! NAT пробит." << std::endl;
+                udpPunched = true;
+                break;
+            }
+        }
+
+        sf::sleep(sf::milliseconds(100)); // Безопасный интервал для роутеров
+    }
+
+    // Освобождаем локальный порт (удаляем UDP сокет), чтобы его мог занять TCP
+    udpSocket.unbind(); 
+
+    if (!udpPunched) {
+        std::cout << "[P2P] Не удалось пробить NAT через UDP." << std::endl;
+        return nullptr;
+    }
+
+    // === ЭТАП 2: УСТАНОВКА TCP СОЕДИНЕНИЯ ===
+    // Даем роутерам 50 мс «переварить» закрытие UDP и подготовиться к TCP
+    sf::sleep(sf::milliseconds(50)); 
+
+    // Создаем умный указатель
+    auto tcpSocket = std::make_unique<sf::TcpSocket>();
+
+    if (isHost) {
+        // ХОСТ запускает прослушивание на том же пробитом порту
+        sf::TcpListener listener;
+        if (listener.listen(localPort) != sf::Socket::Done) {
+            std::cout << "[P2P TCP] Не удалось запустить Listener на порту " << localPort << std::endl;
+            return nullptr; // unique_ptr сам очистит память tcpSocket
+        }
+        
+        std::cout << "[P2P TCP] Ожидание TCP подключения от соседа..." << std::endl;
+        listener.setBlocking(true); 
+        
+        // Передаем объект сокета внутрь listener через разыменование указателя
+        if (listener.accept(*tcpSocket) != sf::Socket::Done) {
+            std::cout << "[P2P TCP] Сосед не смог подключиться по TCP." << std::endl;
+            return nullptr;
+        }
+    } 
+    else {
+        // КЛИЕНТ мгновенно стучится по TCP в открытую дверь
+        std::cout << "[P2P TCP] Подключаемся к хосту по TCP..." << std::endl;
+        tcpSocket->setBlocking(true);
+        
+        // Пытаемся подключиться несколько раз подряд
+        bool tcpConnected = false;
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            if (tcpSocket->connect(remote, remotePort, sf::seconds(2)) == sf::Socket::Done) {
+                tcpConnected = true;
+                break;
+            }
+            sf::sleep(sf::milliseconds(200));
+        }
+
+        if (!tcpConnected) {
+            std::cout << "[P2P TCP] Ошибка TCP подключения к хосту." << std::endl;
+            return nullptr;
+        }
+    }
+
+    std::cout << "[P2P] УСПЕХ! Стабильное TCP соединение установлено!" << std::endl;
+    
+    // Возвращаем владение указателем наружу
+    return tcpSocket;
+}
 using namespace std::chrono_literals;
 class Server: public NetworkInterface {
 private:
     sf::TcpListener listener;
-    sf::TcpSocket clientSocket;
-    WinApiPortForwarder forwarder;
+    std::unique_ptr<sf::TcpSocket> clientSocket = nullptr;
+    // WinApiPortForwarder forwarder;
     bool need_close = false;
     bool listen_work = false;
+    bool isHost = false;
+    std::string ip;
 public:
-    Server() = default;
+    Server(std::string ip, bool isHost): ip(ip), isHost(isHost) {};
     virtual ~Server() {
         if (listen_work) {
             need_close = true;
@@ -1840,13 +2430,13 @@ public:
     }
     virtual int start(int port) {
         std::string myLocalIp = sf::IpAddress::getLocalAddress().toString();
-        forwarder.openPort(port, myLocalIp);
-        if (listener.listen(port) != sf::Socket::Status::Done) {
-            std::cout << "[Server] Error: Cannot listen to port " << port << "\n";
-            return 1;
-        }
+        // forwarder.openPort(port, myLocalIp);
+        // if (listener.listen(port) != sf::Socket::Status::Done) {
+        //     std::cout << "[Server] Error: Cannot listen to port " << port << "\n";
+        //     return 1;
+        // }
         listener.setBlocking(false); 
-        sf::RenderWindow waitWindow(sf::VideoMode(400, 200), L"Ожидание игрока", sf::Style::Titlebar | sf::Style::Close);
+        sf::RenderWindow waitWindow(sf::VideoMode(400, 200), L"Ожидание игрока (нажмите чтоб подключится)", sf::Style::Titlebar | sf::Style::Close);
         waitWindow.setFramerateLimit(60); // Ограничиваем FPS, чтобы не нагружать процессор на 100%
 
         sf::Text text;
@@ -1865,13 +2455,18 @@ public:
                 if (event.type == sf::Event::Closed) {
                     waitWindow.close();
                     return 2;
+                } else if (event.type == sf::Event::MouseButtonPressed) {
+                    clientSocket = EstablishP2PConnection(ip, port, port, isHost);
+                    clientSocket->setBlocking(false);
+                    waitWindow.close();
+                    return 0;
                 }
             }
 
-            if (update() == 1) {
-                waitWindow.close();
-                return 0; 
-            }
+            // if (update() == 1) {
+            //     waitWindow.close();
+            //     return 0; 
+            // }
 
             waitWindow.clear(sf::Color(30, 30, 30));
             waitWindow.draw(text);
@@ -1880,23 +2475,24 @@ public:
 
         return 2;
     }
-    int update() {
-        sf::Socket::Status status = listener.accept(clientSocket);
-        if (status == sf::Socket::Status::Done) {
-            std::cout << "[Server] Client connected!\n";
-            clientSocket.setBlocking(false);
-            return 1;
-        } 
-        else if (status == sf::Socket::Status::NotReady) {
-            return 0;
-        } 
-        else {
-            std::cout << "[Server] Error during accept\n";
-            return 2;
-        }
-    }
+    // int update() {
+    //     sf::Socket::Status status = listener.accept(clientSocket);
+    //     if (status == sf::Socket::Status::Done) {
+    //         std::cout << "[Server] Client connected!\n";
+    //         clientSocket.setBlocking(false);
+    //         return 1;
+    //     } 
+    //     else if (status == sf::Socket::Status::NotReady) {
+    //         return 0;
+    //     } 
+    //     else {
+    //         std::cout << "[Server] Error during accept\n";
+    //         return 2;
+    //     }
+    // }
     std::string get_global_ip() {
-        return forwarder.getGlobalIpDirectly();
+        // return forwarder.getGlobalIpDirectly();
+        return sf::IpAddress::getPublicAddress().toString();
     }
     virtual void listen(Board& board) {
         listen_work = true;
@@ -1904,7 +2500,7 @@ public:
             while (true) {
                 sf::Packet packet;
 
-                auto status = clientSocket.receive(packet);
+                auto status = clientSocket->receive(packet);
                 if (status == sf::Socket::Status::Done) {
                     std::vector<uint8_t> buffer;
                     
@@ -1929,6 +2525,7 @@ public:
 
                             int K = 32; // 40 для новичков, 32 для базы
                             elo = std::round(elo + K * (actual - expected));
+                            std::ofstream("elo.bin", std::ios::binary).write(reinterpret_cast<const char*>(&elo), sizeof(elo));
                         }
                     } else if (buffer.size()==7) {
                         std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> step = *(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>*)buffer.data();
@@ -1981,7 +2578,7 @@ public:
             packet << byte;
         }
         while (true) {
-            auto status = clientSocket.send(packet);
+            auto status = clientSocket->send(packet);
             
             if (status == sf::Socket::Status::Done) {
                 break;
@@ -1995,132 +2592,132 @@ public:
         }
     }
 };
-class Client: public NetworkInterface {
-private:
-    sf::TcpSocket serverSocket;
-    sf::IpAddress ip;
-    bool need_close = false;
-    bool listen_work = false;
-public:
-    Client(std::string ip): ip(ip) {};
-    virtual ~Client() {
-        if (listen_work) {
-            need_close = true;
-            while (need_close) {
-                std::this_thread::sleep_for(10ms);
-            }
-        }
-    }
-    virtual int start(int port) {
-        sf::Socket::Status status = serverSocket.connect(ip, static_cast<unsigned short>(port));
+// class Client: public NetworkInterface {
+// private:
+//     sf::TcpSocket serverSocket;
+//     sf::IpAddress ip;
+//     bool need_close = false;
+//     bool listen_work = false;
+// public:
+//     Client(std::string ip): ip(ip) {};
+//     virtual ~Client() {
+//         if (listen_work) {
+//             need_close = true;
+//             while (need_close) {
+//                 std::this_thread::sleep_for(10ms);
+//             }
+//         }
+//     }
+//     virtual int start(int port) {
+//         sf::Socket::Status status = serverSocket.connect(ip, static_cast<unsigned short>(port));
 
-        // 2. Проверяем результат подключения
-        if (status == sf::Socket::Status::Done) {
-            std::cout << "connect!" << std::endl;
-            serverSocket.setBlocking(false);
-            return 0; 
-        } else {
-            std::cout << "error connect" << std::endl;
-            return 1; 
-        }
-    }
-    virtual void listen(Board& board) {
-        listen_work = true;
-        std::thread th([this, &board]() {
-            //std::cout << "start listen!" << std::endl;
-            while (true) {
-                sf::Packet packet;
-                auto status = serverSocket.receive(packet);
-                if (status == sf::Socket::Status::Done) {
-                    std::vector<uint8_t> buffer;
+//         // 2. Проверяем результат подключения
+//         if (status == sf::Socket::Status::Done) {
+//             std::cout << "connect!" << std::endl;
+//             serverSocket.setBlocking(false);
+//             return 0; 
+//         } else {
+//             std::cout << "error connect" << std::endl;
+//             return 1; 
+//         }
+//     }
+//     virtual void listen(Board& board) {
+//         listen_work = true;
+//         std::thread th([this, &board]() {
+//             //std::cout << "start listen!" << std::endl;
+//             while (true) {
+//                 sf::Packet packet;
+//                 auto status = serverSocket.receive(packet);
+//                 if (status == sf::Socket::Status::Done) {
+//                     std::vector<uint8_t> buffer;
                     
-                    buffer.assign(static_cast<const uint8_t*>(packet.getData()), 
-                                static_cast<const uint8_t*>(packet.getData()) + packet.getDataSize());
-                    std::cout << "get:" << " ";
-                    for (uint8_t byte : buffer) {
-                        std::cout << static_cast<int>(byte) << " ";
-                    }
-                    std::cout << std::endl;
-                    if (buffer.size()==5) { // информация о победе
-                        std::pair<int, uint8_t> data_end = *(std::pair<int, uint8_t>*)buffer.data();
-                        if (data_end.second!=0) {
-                            double expected = 1.0 / (1.0 + pow(10.0, (data_end.first - elo) / 400.0)); // ожидаемый результат
-                            // 2. Определяем реальный результат игрока (S)
-                            double actual = 0.5;
-                            if (data_end.second == 1) {
-                                actual = (board.player_color == 1) ? 1.0 : 0.0; // Победа белых
-                            } else if (data_end.second == 3) {
-                                actual = (board.player_color == 0) ? 1.0 : 0.0; // Победа чёрных
-                            }
+//                     buffer.assign(static_cast<const uint8_t*>(packet.getData()), 
+//                                 static_cast<const uint8_t*>(packet.getData()) + packet.getDataSize());
+//                     std::cout << "get:" << " ";
+//                     for (uint8_t byte : buffer) {
+//                         std::cout << static_cast<int>(byte) << " ";
+//                     }
+//                     std::cout << std::endl;
+//                     if (buffer.size()==5) { // информация о победе
+//                         std::pair<int, uint8_t> data_end = *(std::pair<int, uint8_t>*)buffer.data();
+//                         if (data_end.second!=0) {
+//                             double expected = 1.0 / (1.0 + pow(10.0, (data_end.first - elo) / 400.0)); // ожидаемый результат
+//                             // 2. Определяем реальный результат игрока (S)
+//                             double actual = 0.5;
+//                             if (data_end.second == 1) {
+//                                 actual = (board.player_color == 1) ? 1.0 : 0.0; // Победа белых
+//                             } else if (data_end.second == 3) {
+//                                 actual = (board.player_color == 0) ? 1.0 : 0.0; // Победа чёрных
+//                             }
 
-                            int K = 32; // 40 для новичков, 32 для базы
-                            elo = std::round(elo + K * (actual - expected));
-                        }
-                    } else if (buffer.size()==7) {
-                        std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> step = *(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>*)buffer.data();
-                        if (board.ccolor!=board.player_color && step.second.first.first<8 && step.second.first.second<8 && step.second.second.first<8 && step.second.second.second<8) {
-                            board.take_a_step_anim(step);
-                            if (board.check_win()) {
-                                std::pair<int, uint8_t> data_end = {elo, board.victory_type};
-                                std::vector<uint8_t> send_data;
-                                send_data.assign((uint8_t*)&data_end, ((uint8_t*)&data_end)+sizeof(data_end));
-                                send(send_data);
-                            } else {
-                                board.ccolor = !board.ccolor;
-                            }
-                        } else {
-                            std::cout << "a cheating move by an opponent" << std::endl;
-                        }
-                    } else {
-                        uint32_t size =  static_cast<uint32_t>(buffer[0])         |
-                            (static_cast<uint32_t>(buffer[1]) << 8)  |
-                            (static_cast<uint32_t>(buffer[2]) << 16) |
-                            (static_cast<uint32_t>(buffer[3]) << 24);
-                        std::vector<uint8_t> content = std::vector<uint8_t>(buffer.begin()+4, buffer.begin()+4+size);
-                        std::string filename = std::string(buffer.begin()+4+size+1, buffer.end());
-                        board.loadFromString(content, filename);
-                    }
-                } else if (status == sf::Socket::Status::Disconnected || status == sf::Socket::Status::Error) {
-                    std::cout << "[Conn] connect stop" << std::endl;
-                    listen_work = false;
-                    break; 
-                }
-                if (need_close) {
-                    need_close = false;
-                    break;
-                }
-                std::this_thread::sleep_for(10ms);
-            }
-            std::cout << "listen end" << std::endl;
-        });
-        th.detach();
-    }
-    virtual void send(const std::vector<uint8_t>& data) {
-        std::cout << "send:" << " ";
-        for (uint8_t byte : data) {
-            std::cout << static_cast<int>(byte) << " ";
-        }
-        std::cout << std::endl;
+//                             int K = 32; // 40 для новичков, 32 для базы
+//                             elo = std::round(elo + K * (actual - expected));
+//                         }
+//                     } else if (buffer.size()==7) {
+//                         std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> step = *(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>>*)buffer.data();
+//                         if (board.ccolor!=board.player_color && step.second.first.first<8 && step.second.first.second<8 && step.second.second.first<8 && step.second.second.second<8) {
+//                             board.take_a_step_anim(step);
+//                             if (board.check_win()) {
+//                                 std::pair<int, uint8_t> data_end = {elo, board.victory_type};
+//                                 std::vector<uint8_t> send_data;
+//                                 send_data.assign((uint8_t*)&data_end, ((uint8_t*)&data_end)+sizeof(data_end));
+//                                 send(send_data);
+//                             } else {
+//                                 board.ccolor = !board.ccolor;
+//                             }
+//                         } else {
+//                             std::cout << "a cheating move by an opponent" << std::endl;
+//                         }
+//                     } else {
+//                         uint32_t size =  static_cast<uint32_t>(buffer[0])         |
+//                             (static_cast<uint32_t>(buffer[1]) << 8)  |
+//                             (static_cast<uint32_t>(buffer[2]) << 16) |
+//                             (static_cast<uint32_t>(buffer[3]) << 24);
+//                         std::vector<uint8_t> content = std::vector<uint8_t>(buffer.begin()+4, buffer.begin()+4+size);
+//                         std::string filename = std::string(buffer.begin()+4+size+1, buffer.end());
+//                         board.loadFromString(content, filename);
+//                     }
+//                 } else if (status == sf::Socket::Status::Disconnected || status == sf::Socket::Status::Error) {
+//                     std::cout << "[Conn] connect stop" << std::endl;
+//                     listen_work = false;
+//                     break; 
+//                 }
+//                 if (need_close) {
+//                     need_close = false;
+//                     break;
+//                 }
+//                 std::this_thread::sleep_for(10ms);
+//             }
+//             std::cout << "listen end" << std::endl;
+//         });
+//         th.detach();
+//     }
+//     virtual void send(const std::vector<uint8_t>& data) {
+//         std::cout << "send:" << " ";
+//         for (uint8_t byte : data) {
+//             std::cout << static_cast<int>(byte) << " ";
+//         }
+//         std::cout << std::endl;
 
-        sf::Packet packet;
-        for (uint8_t byte : data) {
-            packet << byte;
-        }
-        while (true) {
-            auto status = serverSocket.send(packet);
+//         sf::Packet packet;
+//         for (uint8_t byte : data) {
+//             packet << byte;
+//         }
+//         while (true) {
+//             auto status = serverSocket.send(packet);
             
-            if (status == sf::Socket::Status::Done) {
-                break;
-            }
-            if (status == sf::Socket::Status::NotReady) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                continue; 
-            }
-            std::cout << "error send" << std::endl;
-            break;
-        }
-    }
-};
+//             if (status == sf::Socket::Status::Done) {
+//                 break;
+//             }
+//             if (status == sf::Socket::Status::NotReady) {
+//                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
+//                 continue; 
+//             }
+//             std::cout << "error send" << std::endl;
+//             break;
+//         }
+//     }
+// };
 
 struct LinkBounds {
     size_t start;
@@ -2151,7 +2748,7 @@ std::vector<LinkBounds> findLinksInText(const std::wstring& str) {
 void showHelp() {
     std::wstring helpData = 
 L"# Chess\n"
-"Версия v2.0.0\n"
+"Версия "+currentChessVer.toWString()+ L"\n"
 "Информация о вас:\n"
 "* Ваш Эло "+std::to_wstring(elo)+L"\n"
 "# Горячие клавиши:\n"
@@ -2160,6 +2757,7 @@ L"# Chess\n"
 "   * Alt-A - включает подсказки\n"
 "   * ? - показывает при включённой подсказке почему бот так пошёл ввиде делания плюс один ход как он думает произойдёт\n"
 "   * Control-H - вызывает это\n"
+"   * f11 - открывает в полноэкранном режиме\n"
 "##  * Более точные:\n"
 "   * d - Установить глубину думания в полуходах бота\n"
 "##  * Частично реализоуванные другими/недобавленый функционал:\n"
@@ -2283,14 +2881,254 @@ L"# Chess\n"
         helpWindow.display();
     }
 }
+#include <functional>
+struct parametr {
+    std::wstring name;
+    std::function<std::wstring(Board&, Textures_struct&, bool, std::wstring)> action;
+};
+void drawRoundedButton(sf::RenderWindow& window, sf::FloatRect rect, float radius, sf::Color color) {
+    // Центральный и боковые прямоугольники
+    sf::RectangleShape rectX(sf::Vector2f(rect.width - 2 * radius, rect.height));
+    rectX.setPosition(rect.left + radius, rect.top);
+    rectX.setFillColor(color);
 
+    sf::RectangleShape rectY(sf::Vector2f(rect.width, rect.height - 2 * radius));
+    rectY.setPosition(rect.left, rect.top + radius);
+    rectY.setFillColor(color);
+
+    // Углы
+    sf::CircleShape circle(radius);
+    circle.setFillColor(color);
+
+    window.draw(rectX);
+    window.draw(rectY);
+
+    circle.setPosition(rect.left, rect.top);
+    window.draw(circle);
+    circle.setPosition(rect.left + rect.width - 2 * radius, rect.top);
+    window.draw(circle);
+    circle.setPosition(rect.left, rect.top + rect.height - 2 * radius);
+    window.draw(circle);
+    circle.setPosition(rect.left + rect.width - 2 * radius, rect.top + rect.height - 2 * radius);
+    window.draw(circle);
+}
+std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> save_data;
+std::unordered_map<std::wstring, std::vector<std::vector<int>>> save_settings;
+std::unordered_map<std::wstring, std::vector<std::vector<parametr>>> all_parameters;
+// 1. Функция загрузки и инициализации текста параметров
+std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> loadSettings(Board& cBoard) {
+    std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> result;
+
+    for (const auto& [category, rows] : all_parameters) {
+        // Гарантируем размер категорий (безопасно расширяет, если структура в save_settings устарела)
+        save_settings[category].resize(rows.size());
+        result[category].resize(rows.size());
+
+        for (size_t r = 0; r < rows.size(); ++r) {
+            // Гарантируем размер колонок в ряду под текущую версию кода
+            save_settings[category][r].resize(rows[r].size(), 0);
+            result[category][r].resize(rows[r].size());
+
+            for (size_t c = 0; c < rows[r].size(); ++c) {
+                int clicks = save_settings[category][r][c];
+                
+                // Защита от поврежденных файлов сохранений с отрицательными кликами
+                if (clicks < 0) {
+                    clicks = 0;
+                    save_settings[category][r][c] = 0; // Сбрасываем в сейве на корректное значение
+                }
+
+                std::wstring current_text = rows[r][c].name;
+                
+                for (int i = 0; i < clicks; ++i) {
+                    current_text = rows[r][c].action(cBoard, Textures, true, current_text);
+                }
+                result[category][r][c] = current_text;
+            }
+        }
+    }
+    return result;
+}
+// 2. Основная функция отображения настроек
+void showSettings(Board& cBoard) {
+    // Конфигурация главного экрана (категорий)
+    const std::vector<std::vector<std::wstring>> main_menu_structure = {
+        { L"Игра", L"Графика" },
+        { L"Закрыть" }
+    };
+
+    // Создаем окно настроек
+    sf::RenderWindow window(sf::VideoMode(800, 600), "Settings", sf::Style::Titlebar | sf::Style::Close);
+    window.setFramerateLimit(60);
+
+    // Состояние меню: L"" означает главное меню категорий, иначе — имя открытой категории
+    std::wstring current_screen = L""; 
+
+    // Размеры и отступы кнопок (Minecraft style)
+    const float padding_x = 20.0f;
+    const float padding_y = 15.0f;
+    const float button_height = 40.0f;
+    const float start_y = 150.0f;
+    const float corner_radius = 5.0f;
+
+    // Цвета кнопок
+    const sf::Color normal_grey(100, 100, 100);
+    const sf::Color hover_grey(140, 140, 140);
+
+    while (window.isOpen()) {
+        sf::Event event;
+        sf::Vector2i mouse_pos = sf::Mouse::getPosition(window);
+
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed) {
+                window.close();
+            } else if (event.type == sf::Event::Resized) {
+                sf::FloatRect visibleArea(0.f, 0.f, event.size.width, event.size.height);
+                window.setView(sf::View(visibleArea));
+            }
+
+            if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
+                sf::Vector2f click_pos(event.mouseButton.x, event.mouseButton.y);
+
+                if (current_screen == L"") {
+                    // Клик в Главном меню категорий
+                    float current_y = start_y;
+                    for (size_t r = 0; r < main_menu_structure.size(); ++r) {
+                        size_t buttons_in_row = main_menu_structure[r].size();
+                        float total_width = window.getSize().x - 2 * padding_x;
+                        float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
+
+                        for (size_t c = 0; c < buttons_in_row; ++c) {
+                            float btn_x = padding_x + c * (btn_width + padding_x);
+                            sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
+
+                            if (btn_rect.contains(click_pos)) {
+                                std::wstring selected = main_menu_structure[r][c];
+                                if (selected == L"Закрыть") {
+                                    window.close();
+                                } else {
+                                    current_screen = selected; // Переходим в категорию
+                                }
+                                break;
+                            }
+                        }
+                        current_y += button_height + padding_y;
+                    }
+                } 
+                else {
+                    // Клик внутри конкретной категории настроек
+                    auto& rows = save_data[current_screen];
+                    float current_y = start_y;
+                    bool clicked_something = false;
+
+                    for (size_t r = 0; r < rows.size(); ++r) {
+                        size_t buttons_in_row = rows[r].size();
+                        float total_width = window.getSize().x - 2 * padding_x;
+                        float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
+
+                        for (size_t c = 0; c < buttons_in_row; ++c) {
+                            float btn_x = padding_x + c * (btn_width + padding_x);
+                            sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
+
+                            if (btn_rect.contains(click_pos)) {
+                                // Нажали на параметр: увеличиваем счетчик кликов
+                                save_settings[current_screen][r][c]++;
+                                
+                                // Вызываем std::function из оригинальной структуры параметров и обновляем текст
+                                save_data[current_screen][r][c] = all_parameters[current_screen][r][c].action(cBoard, Textures, false, save_data[current_screen][r][c]);
+
+                                clicked_something = true;
+                                break;
+                            }
+                        }
+                        if (clicked_something) break;
+                        current_y += button_height + padding_y;
+                    }
+
+                    // Кнопка "Назад" внизу экрана подкатегории
+                    sf::FloatRect back_rect(window.getSize().x / 2.0f - 100.0f, window.getSize().y - 80.0f, 200.0f, button_height);
+                    if (!clicked_something && back_rect.contains(click_pos)) {
+                        current_screen = L""; // Возврат в главное меню
+                    }
+                }
+            }
+        }
+
+        window.clear(sf::Color(30, 30, 30)); // Темный фон а-ля Minecraft
+
+        // Отрисовка интерфейса
+        if (current_screen == L"") {
+            // Отрисовка главного меню категорий
+            float current_y = start_y;
+            for (size_t r = 0; r < main_menu_structure.size(); ++r) {
+                size_t buttons_in_row = main_menu_structure[r].size();
+                float total_width = window.getSize().x - 2 * padding_x;
+                float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
+
+                for (size_t c = 0; c < buttons_in_row; ++c) {
+                    float btn_x = padding_x + c * (btn_width + padding_x);
+                    sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
+
+                    // Эффект наведения мыши
+                    sf::Color current_color = btn_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
+                    drawRoundedButton(window, btn_rect, corner_radius, current_color);
+
+                    // Текст на кнопке
+                    sf::Text text(main_menu_structure[r][c], defaultFont, 20);
+                    text.setFillColor(sf::Color::White);
+                    // Центрирование текста
+                    sf::FloatRect text_bounds = text.getLocalBounds();
+                    text.setOrigin(text_bounds.left + text_bounds.width / 2.0f, text_bounds.top + text_bounds.height / 2.0f);
+                    text.setPosition(btn_rect.left + btn_rect.width / 2.0f, btn_rect.top + btn_rect.height / 2.0f);
+                    window.draw(text);
+                }
+                current_y += button_height + padding_y;
+            }
+        } else {// Отрисовка экрана выбранной категории
+            auto& rows = save_data[current_screen];
+            float current_y = start_y;
+            for (size_t r = 0; r < rows.size(); ++r) {
+                size_t buttons_in_row = rows[r].size();
+                float total_width = window.getSize().x - 2 * padding_x;
+                float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
+                for (size_t c = 0; c < buttons_in_row; ++c) {
+                    float btn_x = padding_x + c * (btn_width + padding_x);
+                    sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
+                    sf::Color current_color = btn_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
+                    drawRoundedButton(window, btn_rect, corner_radius, current_color);
+                    sf::Text text(rows[r][c], defaultFont, 18);
+                    text.setFillColor(sf::Color::White);
+                    sf::FloatRect text_bounds = text.getLocalBounds();
+                    text.setOrigin(text_bounds.left + text_bounds.width / 2.0f, text_bounds.top + text_bounds.height / 2.0f);
+                    text.setPosition(btn_rect.left + btn_rect.width / 2.0f, btn_rect.top + btn_rect.height / 2.0f);
+                    window.draw(text);
+                }
+                current_y += button_height + padding_y;
+            }
+            // Отрисовка кнопки "Назад"
+            sf::FloatRect back_rect(window.getSize().x / 2.0f - 100.0f, window.getSize().y - 80.0f, 200.0f, button_height);
+            sf::Color back_color = back_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
+            drawRoundedButton(window, back_rect, corner_radius, back_color);
+            sf::Text back_text(L"Назад", defaultFont, 20);
+            back_text.setFillColor(sf::Color::White);
+            sf::FloatRect back_bounds = back_text.getLocalBounds();
+            back_text.setOrigin(back_bounds.left + back_bounds.width / 2.0f, back_bounds.top + back_bounds.height / 2.0f);
+            back_text.setPosition(back_rect.left + back_rect.width / 2.0f, back_rect.top + back_rect.height / 2.0f);
+            window.draw(back_text);
+        }
+        window.display();
+    }
+    save_to_file("./chess_settings.sett", save_settings);
+}
+#include <filesystem>
+#include "libs/serialize.cpp"
 int main() {
     // try {
         float width = 600;
-        float height = 700;
-        sf::VideoMode vidioMode(600, 700);
-        sf::View view(sf::FloatRect(0.f, 0.f, 600.f, 700.f));
-        sf::RenderWindow window(vidioMode, "Chess v2.0.0");
+        float height = 730;
+        sf::VideoMode vidioMode(600, 730);
+        sf::View view(sf::FloatRect(0.f, 0.f, 600.f, 730.f));
+        sf::RenderWindow window(vidioMode, "Chess "+currentChessVer.toString());
         defaultFont.loadFromFile("C:/Windows/Fonts/arial.ttf");
         Textures.load();
         window.setFramerateLimit(30);
@@ -2311,37 +3149,183 @@ int main() {
             cBoard.player_color = -1;
             cBoard.loadFromFileNC(L"./start.txt");
             connection = nullptr;
-        } else if (res==2) {
+        } else if (res==2 || res==3) {
             cBoard.bot = false;
             cBoard.loadFromFileNC(L"./start.txt");
-            connection = std::make_unique<Server>();
-            std::cout << "server starting on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
-            std::cout << "server starting on " << static_cast<Server*>(connection.get())->get_global_ip() << " global address" << std::endl;
-            if (connection->start(8080)==0) {
-                connection->listen(cBoard);
-                cBoard.player_color = 0;
-            } else {
-                connection = nullptr;
-                cBoard.player_color = -1;
-            }
-        } else if (res==3) {
-            cBoard.bot = false;
-            cBoard.loadFromFileNC(L"./start.txt");
-            std::string str = getString("input ip", L"Введите ip сервера", window);
+            std::string str = getString("input ip", L"Введите ip второго игрока", window);
             sf::IpAddress address(str);
             bool end = false;
             if (address == sf::IpAddress::None) {
                 end = true; 
             }
             if (!end) {
-                connection = std::make_unique<Client>(str);
-                connection->start(8080);
-                connection->listen(cBoard);
-                cBoard.player_color = 0;
+                connection = std::make_unique<Server>(address.toString(), res==2);
+                std::cout << "server starting on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
+                std::cout << "server starting on " << static_cast<Server*>(connection.get())->get_global_ip() << " global address" << std::endl;
+                if (connection->start(8080)==0) {
+                    connection->listen(cBoard);
+                    cBoard.player_color = res==2?0:1;
+                } else {
+                    connection = nullptr;
+                    cBoard.player_color = -1;
+                }
             } else {
                 cBoard.player_color = -1;
             }
+        }  
+        if (std::filesystem::exists("./chess_settings.sett")) {
+            load_from_file("./chess_settings.sett", save_settings);
         }
+        int framerateLimit = 30;
+        bool isVSYNC = false;
+        all_parameters = {
+            { L"Графика", {
+                {
+                    {
+                        L"Текстуры: Сглаженые",
+                        [](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
+                            t.setSmooth(!t.isSmooth());
+                            return (t.isSmooth() ? L"Текстуры: Сглаженные" : L"Текстуры: Пиксельные");
+                        }
+                    },
+                    {
+                        L"FPS: 30",
+                        [&window, &framerateLimit, &isVSYNC](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
+                            old_text.erase(0, 5); 
+                            std::wstring new_text = L"FPS: ?";
+                            if (old_text==L"30") {
+                                window.setFramerateLimit(60);
+                                framerateLimit = 60;
+                                new_text = L"FPS: 60";
+                            } else if (old_text==L"60") {
+                                window.setFramerateLimit(120);
+                                framerateLimit = 120;
+                                new_text = L"FPS: 120";
+                            } else if (old_text==L"120") {
+                                window.setVerticalSyncEnabled(true);
+                                window.setFramerateLimit(0);
+                                framerateLimit = 0;
+                                isVSYNC = true;
+                                new_text = L"FPS: VSYNC";
+                            } else if (old_text==L"VSYNC") {
+                                window.setVerticalSyncEnabled(false);
+                                isVSYNC = false;
+                                window.setFramerateLimit(30);
+                                framerateLimit = 30;
+                                new_text = L"FPS: 30";
+                            }
+                            return new_text;
+                        }
+                    }
+                } 
+            }},
+            { L"Игра", {
+                {
+                    {
+                        L"Сменить режим игры",
+                        [&connection, &window](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
+                            if (!isLoading) {
+                                int res = showWindowChangeGameMode(window);
+                                if (res==0) {
+                                    b.bot = false;
+                                    b.player_color = -1;
+                                    b.loadFromFileNC(L"./start.txt");
+                                    connection = nullptr;
+                                } else if (res==1) {
+                                    b.bot = true;
+                                    b.player_color = -1;
+                                    b.loadFromFileNC(L"./start.txt");
+                                    connection = nullptr;
+                                } else if (res==2 || res==3) {
+                                    b.bot = false;
+                                    b.loadFromFileNC(L"./start.txt");
+                                    std::string str = getString("input ip", L"Введите ip второго игрока", window);
+                                    sf::IpAddress address(str);
+                                    bool end = false;
+                                    if (address == sf::IpAddress::None) {
+                                        end = true; 
+                                    }
+                                    if (!end) {
+                                        connection = std::make_unique<Server>(address.toString(), res==2);
+                                        std::cout << "server starting on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
+                                        std::cout << "server starting on " << static_cast<Server*>(connection.get())->get_global_ip() << " global address" << std::endl;
+                                        if (connection->start(8080)==0) {
+                                            connection->listen(b);
+                                            b.player_color = res==2?0:1;
+                                        } else {
+                                            connection = nullptr;
+                                            b.player_color = -1;
+                                        }
+                                    } else {
+                                        b.player_color = -1;
+                                    }
+                                } 
+                            }
+                            return L"Сменить режим игры";
+                        }
+                    },
+                    {
+                        L"Переворачивать экран при ходе: Выкл",
+                        [](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
+                            b.no_rotate_screen = !b.no_rotate_screen;
+                            return std::wstring(L"Переворачивать экран при ходе: ")+(b.no_rotate_screen?L"Выкл":L"Вкл");
+                        }
+                    }
+                },
+                {
+                    {
+                        L"Глубина бота: 7 полуходов",
+                        [](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
+                            if (b.bot_depth<11) {
+                                b.bot_depth++;
+                            } else {
+                                b.bot_depth = 6;
+                            }
+                            return L"Глубина бота: "+std::to_wstring(b.bot_depth)+L" полуходов";
+                        }
+                    }
+                },
+                {
+                    {
+                        L"Подсказки: Выкл",
+                        [](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
+                            if (b.hint) {
+                                b.hint = std::nullopt;
+                                for (int i = b.history_hint.size()-1; i!=-1; i++) {
+                                    b.untake_a_step(b.history_hint[i]);
+                                    b.ccolor = !b.ccolor;
+                                }
+                                b.history_hint.clear();
+                            } else {
+                                b.hint = b.make_move(b.ccolor, b.bot_depth-1);
+                            }
+                            return std::wstring(L"Подсказки: ")+(b.hint?L"Вкл":L"Выкл");
+                        }
+                    }
+                }
+            }},
+        };
+
+        save_data = loadSettings(cBoard);
+        //else if (res==3) {
+        //     cBoard.bot = false;
+        //     cBoard.loadFromFileNC(L"./start.txt");
+        //     std::string str = getString("input ip", L"Введите ip сервера", window);
+        //     sf::IpAddress address(str);
+        //     bool end = false;
+        //     if (address == sf::IpAddress::None) {
+        //         end = true; 
+        //     }
+        //     if (!end) {
+        //         connection = std::make_unique<Client>(str);
+        //         connection->start(8080);
+        //         connection->listen(cBoard);
+        //         cBoard.player_color = 0;
+        //     } else {
+        //         cBoard.player_color = -1;
+        //     }
+        // }
+        bool isFullscrean = false;
         while (window.isOpen()) {
             sf::Event event;
             while (window.pollEvent(event)) {
@@ -2372,70 +3356,105 @@ int main() {
                             cBoard.player_color = -1;
                             cBoard.loadFromFileNC(L"./start.txt");
                             connection = nullptr;
-                        } else if (res==2) {
+                        } else if (res==2 || res==3) {
                             cBoard.bot = false;
                             cBoard.loadFromFileNC(L"./start.txt");
-                            connection = std::make_unique<Server>();
-                            std::cout << "server starting on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
-                            std::cout << "server starting on " << static_cast<Server*>(connection.get())->get_global_ip() << " global address" << std::endl;
-                            if (connection->start(8080)==0) {
-                                connection->listen(cBoard);
-                                cBoard.player_color = 0;
-                            } else {
-                                connection = nullptr;
-                                cBoard.player_color = -1;
-                            }
-                        } else if (res==3) {
-                            cBoard.bot = false;
-                            cBoard.loadFromFileNC(L"./start.txt");
-                            std::string str = getString("input ip", L"Введите ip сервера", window);
+                            std::string str = getString("input ip", L"Введите ip второго игрока", window);
                             sf::IpAddress address(str);
                             bool end = false;
                             if (address == sf::IpAddress::None) {
                                 end = true; 
                             }
                             if (!end) {
-                                connection = std::make_unique<Client>(str);
-                                connection->start(8080);
-                                connection->listen(cBoard);
-                                cBoard.player_color = 0;
+                                connection = std::make_unique<Server>(address.toString(), res==2);
+                                std::cout << "server starting on " << sf::IpAddress::getLocalAddress().toString() << "local address" << std::endl;
+                                std::cout << "server starting on " << static_cast<Server*>(connection.get())->get_global_ip() << " global address" << std::endl;
+                                if (connection->start(8080)==0) {
+                                    connection->listen(cBoard);
+                                    cBoard.player_color = res==2?0:1;
+                                } else {
+                                    connection = nullptr;
+                                    cBoard.player_color = -1;
+                                }
                             } else {
                                 cBoard.player_color = -1;
                             }
-                        }
+                        } 
+                        //else if (res==3) {
+                        //     cBoard.bot = false;
+                        //     cBoard.loadFromFileNC(L"./start.txt");
+                        //     std::string str = getString("input ip", L"Введите ip сервера", window);
+                        //     sf::IpAddress address(str);
+                        //     bool end = false;
+                        //     if (address == sf::IpAddress::None) {
+                        //         end = true; 
+                        //     }
+                        //     if (!end) {
+                        //         connection = std::make_unique<Client>(str);
+                        //         connection->start(8080);
+                        //         connection->listen(cBoard);
+                        //         cBoard.player_color = 0;
+                        //     } else {
+                        //         cBoard.player_color = -1;
+                        //     }
+                        // }
                     } else if (event.key.control && event.key.code == sf::Keyboard::H) {
                         showHelp();
+                    } else if (event.key.code == sf::Keyboard::F11) {
+                        isFullscrean = !isFullscrean;
+                        if (isFullscrean) {
+                            sf::VideoMode desktopMode = sf::VideoMode::getDesktopMode();
+                            window.create(desktopMode, "Chess "+currentChessVer.toString(), sf::Style::Fullscreen);
+                            window.setFramerateLimit(framerateLimit);
+                            window.setVerticalSyncEnabled(isVSYNC);
+                            width = desktopMode.width;
+                            height = desktopMode.height;
+                        } else {
+                            window.create(sf::VideoMode(600, 730), "Chess "+currentChessVer.toString());
+                            width = 600;
+                            height = 730;
+                            window.setFramerateLimit(framerateLimit);
+                            window.setVerticalSyncEnabled(isVSYNC);
+                        }
                     }
                 } else if (event.type==sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left && (event.mouseButton.y>std::min(width, height) || event.mouseButton.x>std::min(width, height))) {
-                    int button;
-                    if (height>width) button = ((float)event.mouseButton.x)/width*3;
-                    else button = ((float)event.mouseButton.y)/width*3;
-                    if (button==0) { // restart
-                        cBoard.loadFromFile(L"./start.txt", connection);
-                    } else if (button==1) { // open
-                        std::optional<std::wstring> filename = OpenFileDialog(window,  L"Chess2 map file (*.ctmap)\0*.ctmap\0"
-                            L"Text Files OLD (*.txt)\0*.txt\0");
-                        if (filename) {
-                            cBoard.loadFromFile(*filename, connection);
+                    if (event.mouseButton.y>height-30) {
+                        if (event.mouseButton.x>=1 && event.mouseButton.x<=28+1 && event.mouseButton.y>=height-31 && event.mouseButton.y<=height-1) {
+                            showHelp();
+                        } else if (event.mouseButton.x>=1+28+3 && event.mouseButton.x<=28+1+3+28 && event.mouseButton.y>=height-31 && event.mouseButton.y<=height-1) {
+                            showSettings(cBoard);
                         }
-                    } else if (button==2) { // save
-                        std::optional<std::wstring> filename = SaveFileDialog(window,  L"Chess2 map file (*.ctmap)\0*.ctmap\0"
-                                                                    L"Text Files OLD (*.txt)\0*.txt\0", L"txt");
-                        if (filename) {
-                            cBoard.saveInFile(*filename);
+                    } else {
+                        int button;
+                        if (height>width) button = ((float)event.mouseButton.x)/width*3;
+                        else button = ((float)event.mouseButton.y)/(height-30)*3;
+                        if (button==0) { // restart
+                            cBoard.loadFromFile(L"./start.txt", connection);
+                        } else if (button==1) { // open
+                            std::optional<std::wstring> filename = OpenFileDialog(window,  L"Chess2 map file (*.ctmap)\0*.ctmap\0"
+                                L"Text Files OLD (*.txt)\0*.txt\0");
+                            if (filename) {
+                                cBoard.loadFromFile(*filename, connection);
+                            }
+                        } else if (button==2) { // save
+                            std::optional<std::wstring> filename = SaveFileDialog(window,  L"Chess2 map file (*.ctmap)\0*.ctmap\0"
+                                                                        L"Text Files OLD (*.txt)\0*.txt\0", L"txt");
+                            if (filename) {
+                                cBoard.saveInFile(*filename);
+                            }
                         }
                     }
                 }
             }
-            window.clear(sf::Color::Black);
+            window.clear(sf::Color(25, 25, 25));
             cBoard.draw(window, 0, 0, std::min(width, height));
             sf::RectangleShape button;
             sf::Text text;
             text.setFont(defaultFont);
             if (height>width) {
-                button.setSize(sf::Vector2f(width*0.3333333333, std::max(width, height)-std::min(width, height)));
+                button.setSize(sf::Vector2f(width*0.3333333333, height-width-30));
             } else {
-                button.setSize(sf::Vector2f(width-height, height*0.3333333333));
+                button.setSize(sf::Vector2f(width-height, (height-30)*0.3333333333));
             }
             // restart
             if (height>width) button.setPosition(sf::Vector2f(0, width));
@@ -2446,45 +3465,69 @@ int main() {
             text.setCharacterSize(100);
             {
             float k = text.getLocalBounds().width/100.0;
-            text.setCharacterSize(std::min(button.getSize().y, button.getSize().x/k));
+            text.setCharacterSize(std::min(button.getSize().y*0.9f, button.getSize().x/k));
             }
             text.setFillColor(sf::Color(40, 40, 4));
-            text.setPosition(button.getPosition()+sf::Vector2f((button.getSize().x-text.getLocalBounds().width)*0.5f, 0.0));
+            text.setPosition(button.getPosition()+sf::Vector2f((button.getSize().x-text.getLocalBounds().width)*0.5f, (button.getSize().y-text.getLocalBounds().height)*0.5f-30));
             window.draw(text);
 
             // open
             if (height>width) button.setPosition(sf::Vector2f(width*0.33333, width));
-            else button.setPosition(sf::Vector2f(height, height*0.33333));
+            else button.setPosition(sf::Vector2f(height, (height-30)*0.33333));
             button.setFillColor(sf::Color(20, 200, 20));
             window.draw(button);
             text.setString("open");
             text.setCharacterSize(100);
             {
-            float k = text.getLocalBounds().width/100.0;
-            text.setCharacterSize(std::min(button.getSize().y, button.getSize().x/k));
+            float k = (text.getLocalBounds().width)/100.0;
+            text.setCharacterSize(std::min(button.getSize().y*0.9f, button.getSize().x/k));
             }
             text.setFillColor(sf::Color(4, 40, 4));
-            text.setPosition(button.getPosition()+sf::Vector2f((button.getSize().x-text.getLocalBounds().width)*0.5f, 0.0));
+            text.setPosition(button.getPosition()+sf::Vector2f((button.getSize().x-text.getLocalBounds().width)*0.5f, (button.getSize().y-text.getLocalBounds().height)*0.5f-30));
             window.draw(text);
 
             // save
             if (height>width) button.setPosition(sf::Vector2f(width*0.666666, width));
-            else button.setPosition(sf::Vector2f(height, height*0.666666));
+            else button.setPosition(sf::Vector2f(height, (height-30)*0.666666));
             button.setFillColor(sf::Color(5, 40, 200));
             window.draw(button);
             text.setString("save");
             text.setCharacterSize(100);
             {
             float k = text.getLocalBounds().width/100.0;
-            text.setCharacterSize(std::min(button.getSize().y, button.getSize().x/k));
+            text.setCharacterSize(std::min(button.getSize().y*0.9f, button.getSize().x/k));
             }
             text.setFillColor(sf::Color(1, 8, 40));
-            text.setPosition(button.getPosition()+sf::Vector2f((button.getSize().x-text.getLocalBounds().width)*0.5f, 0.0));
+            text.setPosition(button.getPosition()+sf::Vector2f((button.getSize().x-text.getLocalBounds().width)*0.5f, (button.getSize().y-text.getLocalBounds().height)*0.5f-30));
             window.draw(text);
-
+            // help button
+            sf::CircleShape help_button(28*0.5f);
+            if (height>width) {
+                help_button.setPosition(sf::Vector2f(1, height-29));
+            } else {
+                help_button.setPosition(sf::Vector2f(height+1, height-29));
+            }
+            help_button.setFillColor(sf::Color(100, 100, 100));
+            sf::Text text_help_button;
+            text_help_button.setString("?");
+            text_help_button.setCharacterSize(26);
+            text_help_button.setFont(defaultFont);
+            text_help_button.setFillColor(sf::Color(50, 50, 50));
+            text_help_button.setPosition(help_button.getPosition()+sf::Vector2f((help_button.getRadius()*2.0f-text_help_button.getLocalBounds().getSize().x)*0.5f, (help_button.getRadius()*2.0f-text_help_button.getLocalBounds().getSize().y)*0.5f-help_button.getRadius()*0.5f));
+            window.draw(help_button);
+            window.draw(text_help_button);
+            // settings button
+            sf::RectangleShape settings_button;
+            settings_button.setSize(sf::Vector2f(28, 28));
+            if (height>width) {
+                settings_button.setPosition(sf::Vector2f(1+28+3, height-29));
+            } else {
+                settings_button.setPosition(sf::Vector2f(height+1+28+3, height-29));
+            }
+            settings_button.setTexture(&Textures.Settings_img);
+            window.draw(settings_button);
             window.display();
         }
-        std::ofstream("elo.bin", std::ios::binary).write(reinterpret_cast<const char*>(&elo), sizeof(elo));
     // } catch (const std::bad_alloc& e) {
     //     std::cerr << "Error message: " << e.what() << std::endl;
     //     std::cin.get(); 
