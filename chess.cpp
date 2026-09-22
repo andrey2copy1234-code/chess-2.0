@@ -74,7 +74,7 @@ struct ChessVersion {
         return {max, avg, in_development_ver};
     }
 };
-const ChessVersion currentChessVer = {4, 0, 0, 1};
+const ChessVersion currentChessVer = {5, 0, 0, 0};
 // --- Универсальное объявление интерфейсов Windows UPnP для Clang и GCC ---
 struct IStaticPortMapping : public IDispatch {
     virtual HRESULT STDMETHODCALLTYPE get_ExternalPort(long *pVal) = 0;
@@ -662,8 +662,10 @@ void deleteVerInCtmapString(std::vector<uint8_t>& content) {
     content.erase(content.begin(), content.begin()+3);
 }
 VersionCtmap maxUpVer(VersionCtmap ver) {
-    if (ver.inVersionInterval(VersionCtmap(4, 0, 0), currentChessVer.toVerCtmap())) {
+    if (ver.inVersionInterval(VersionCtmap(5, 0, 0), currentChessVer.toVerCtmap())) {
         return currentChessVer.toVerCtmap();
+    } else if (ver.inVersionInterval(VersionCtmap(4, 0, 0), VersionCtmap(4, 0, 1))) {
+        return VersionCtmap(4, 0, 1);
     } else if (ver.inVersionInterval(VersionCtmap(1, 4, 0), VersionCtmap(3, 0, 0))) {
         return VersionCtmap(3, 0, 0);
     } else if (ver.inVersionInterval(VersionCtmap(1, 0, 0), VersionCtmap(1, 3, 0))) {
@@ -679,6 +681,14 @@ void toNeedVerCtmapString(std::vector<uint8_t>& content, VersionCtmap cVer, Vers
         }
         if (cVer<toVer) {
             uint32_t size = content[0] | content[1]<<8 | content[2]<<16 | content[3]<<24;
+            if (cVer==VersionCtmap(4, 0, 1)) {
+                cVer = VersionCtmap(5, 0, 0);
+                uint32_t size_of_bytes = size*12;
+                for (int i = 4; i!=4+size_of_bytes; i+=12) {
+                    content.insert(content.begin()+(i+10), 0);
+                    content.insert(content.begin()+(i+11), 0);
+                }
+            }
             if (cVer==VersionCtmap(3, 0, 0)) {
                 cVer = VersionCtmap(4, 0, 0);
                 uint32_t size_of_bytes = size*10;
@@ -774,6 +784,291 @@ size_t get_unordered_map_heap_size(const std::unordered_map<K, V>& map) {
     }
     return total_memory;
 }
+#include <functional>
+struct parametr {
+    std::wstring name;
+    std::function<std::wstring(Board&, Textures_struct&, bool, std::wstring)> action;
+    int period;
+};
+void drawRoundedButton(sf::RenderWindow& window, sf::FloatRect rect, float radius, sf::Color color) {
+    // Центральный и боковые прямоугольники
+    sf::RectangleShape rectX(sf::Vector2f(rect.width - 2 * radius, rect.height));
+    rectX.setPosition(rect.left + radius, rect.top);
+    rectX.setFillColor(color);
+
+    sf::RectangleShape rectY(sf::Vector2f(rect.width, rect.height - 2 * radius));
+    rectY.setPosition(rect.left, rect.top + radius);
+    rectY.setFillColor(color);
+
+    // Углы
+    sf::CircleShape circle(radius);
+    circle.setFillColor(color);
+
+    window.draw(rectX);
+    window.draw(rectY);
+
+    circle.setPosition(rect.left, rect.top);
+    window.draw(circle);
+    circle.setPosition(rect.left + rect.width - 2 * radius, rect.top);
+    window.draw(circle);
+    circle.setPosition(rect.left, rect.top + rect.height - 2 * radius);
+    window.draw(circle);
+    circle.setPosition(rect.left + rect.width - 2 * radius, rect.top + rect.height - 2 * radius);
+    window.draw(circle);
+}
+std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> save_data;
+std::unordered_map<std::wstring, std::vector<std::vector<int>>> save_settings;
+std::unordered_map<std::wstring, std::vector<std::vector<parametr>>> all_parameters;
+// 1. Функция загрузки и инициализации текста параметров
+std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> loadSettings(Board& cBoard) {
+    std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> result;
+
+    for (const auto& [category, rows] : all_parameters) {
+        // Гарантируем размер категорий (безопасно расширяет, если структура в save_settings устарела)
+        save_settings[category].resize(rows.size());
+        result[category].resize(rows.size());
+
+        for (size_t r = 0; r < rows.size(); ++r) {
+            // Гарантируем размер колонок в ряду под текущую версию кода
+            save_settings[category][r].resize(rows[r].size(), 0);
+            result[category][r].resize(rows[r].size());
+
+            for (size_t c = 0; c < rows[r].size(); ++c) {
+                int clicks = save_settings[category][r][c];
+                
+                // Защита от поврежденных файлов сохранений с отрицательными кликами
+                if (clicks < 0) {
+                    clicks = 0;
+                    save_settings[category][r][c] = 0; // Сбрасываем в сейве на корректное значение
+                }
+
+                std::wstring current_text = rows[r][c].name;
+                if (rows[r][c].period!=0) {
+                    clicks%=rows[r][c].period;
+                    for (int i = 0; i < clicks; ++i) {
+                        current_text = rows[r][c].action(cBoard, Textures, true, current_text);
+                    }
+                }
+                result[category][r][c] = current_text;
+            }
+        }
+    }
+    return result;
+}
+// 2. Основная функция отображения настроек
+void showSettings(Board& cBoard) {
+    // Конфигурация главного экрана (категорий)
+    const std::vector<std::vector<std::wstring>> main_menu_structure = {
+        { L"Игра", L"Графика" },
+        {L"Отладка"},
+        { L"Закрыть" }
+    };
+
+    // Создаем окно настроек
+    sf::RenderWindow window(sf::VideoMode(800, 600), "Settings", sf::Style::Titlebar | sf::Style::Close);
+    window.setFramerateLimit(60);
+
+    // Состояние меню: L"" означает главное меню категорий, иначе — имя открытой категории
+    std::wstring current_screen = L""; 
+
+    // Размеры и отступы кнопок (Minecraft style)
+    const float padding_x = 20.0f;
+    const float padding_y = 15.0f;
+    const float button_height = 40.0f;
+    const float start_y = 150.0f;
+    const float corner_radius = 5.0f;
+
+    // Цвета кнопок
+    const sf::Color normal_grey(100, 100, 100);
+    const sf::Color hover_grey(140, 140, 140);
+
+    while (window.isOpen()) {
+        sf::Event event;
+        sf::Vector2i mouse_pos = sf::Mouse::getPosition(window);
+
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed) {
+                window.close();
+            } else if (event.type == sf::Event::Resized) {
+                sf::FloatRect visibleArea(0.f, 0.f, event.size.width, event.size.height);
+                window.setView(sf::View(visibleArea));
+            }
+
+            if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
+                sf::Vector2f click_pos(event.mouseButton.x, event.mouseButton.y);
+
+                if (current_screen == L"") {
+                    // Клик в Главном меню категорий
+                    float current_y = start_y;
+                    for (size_t r = 0; r < main_menu_structure.size(); ++r) {
+                        size_t buttons_in_row = main_menu_structure[r].size();
+                        float total_width = window.getSize().x - 2 * padding_x;
+                        float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
+
+                        for (size_t c = 0; c < buttons_in_row; ++c) {
+                            float btn_x = padding_x + c * (btn_width + padding_x);
+                            sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
+
+                            if (btn_rect.contains(click_pos)) {
+                                std::wstring selected = main_menu_structure[r][c];
+                                if (selected == L"Закрыть") {
+                                    window.close();
+                                } else {
+                                    current_screen = selected; // Переходим в категорию
+                                }
+                                break;
+                            }
+                        }
+                        current_y += button_height + padding_y;
+                    }
+                } 
+                else {
+                    // Клик внутри конкретной категории настроек
+                    auto& rows = save_data[current_screen];
+                    float current_y = start_y;
+                    bool clicked_something = false;
+
+                    for (size_t r = 0; r < rows.size(); ++r) {
+                        size_t buttons_in_row = rows[r].size();
+                        float total_width = window.getSize().x - 2 * padding_x;
+                        float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
+
+                        for (size_t c = 0; c < buttons_in_row; ++c) {
+                            float btn_x = padding_x + c * (btn_width + padding_x);
+                            sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
+
+                            if (btn_rect.contains(click_pos)) {
+                                // Нажали на параметр: увеличиваем счетчик кликов
+                                save_settings[current_screen][r][c]++;
+                                
+                                // Вызываем std::function из оригинальной структуры параметров и обновляем текст
+                                save_data[current_screen][r][c] = all_parameters[current_screen][r][c].action(cBoard, Textures, false, save_data[current_screen][r][c]);
+
+                                clicked_something = true;
+                                break;
+                            }
+                        }
+                        if (clicked_something) break;
+                        current_y += button_height + padding_y;
+                    }
+
+                    // Кнопка "Назад" внизу экрана подкатегории
+                    sf::FloatRect back_rect(window.getSize().x / 2.0f - 100.0f, window.getSize().y - 80.0f, 200.0f, button_height);
+                    if (!clicked_something && back_rect.contains(click_pos)) {
+                        current_screen = L""; // Возврат в главное меню
+                    }
+                }
+            }
+        }
+
+        window.clear(sf::Color(30, 30, 30)); // Темный фон а-ля Minecraft
+
+        // Отрисовка интерфейса
+        if (current_screen == L"") {
+            // Отрисовка главного меню категорий
+            float current_y = start_y;
+            for (size_t r = 0; r < main_menu_structure.size(); ++r) {
+                size_t buttons_in_row = main_menu_structure[r].size();
+                float total_width = window.getSize().x - 2 * padding_x;
+                float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
+
+                for (size_t c = 0; c < buttons_in_row; ++c) {
+                    float btn_x = padding_x + c * (btn_width + padding_x);
+                    sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
+
+                    // Эффект наведения мыши
+                    sf::Color current_color = btn_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
+                    drawRoundedButton(window, btn_rect, corner_radius, current_color);
+
+                    // Текст на кнопке
+                    sf::Text text(main_menu_structure[r][c], defaultFont, 20);
+                    text.setFillColor(sf::Color::White);
+                    // Центрирование текста
+                    sf::FloatRect text_bounds = text.getLocalBounds();
+                    text.setOrigin(text_bounds.left + text_bounds.width / 2.0f, text_bounds.top + text_bounds.height / 2.0f);
+                    text.setPosition(btn_rect.left + btn_rect.width / 2.0f, btn_rect.top + btn_rect.height / 2.0f);
+                    window.draw(text);
+                }
+                current_y += button_height + padding_y;
+            }
+        } else {// Отрисовка экрана выбранной категории
+            auto& rows = save_data[current_screen];
+            float current_y = start_y;
+            for (size_t r = 0; r < rows.size(); ++r) {
+                size_t buttons_in_row = rows[r].size();
+                float total_width = window.getSize().x - 2 * padding_x;
+                float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
+                for (size_t c = 0; c < buttons_in_row; ++c) {
+                    float btn_x = padding_x + c * (btn_width + padding_x);
+                    sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
+                    sf::Color current_color = btn_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
+                    drawRoundedButton(window, btn_rect, corner_radius, current_color);
+                    sf::Text text(rows[r][c], defaultFont, 18);
+                    text.setFillColor(sf::Color::White);
+                    sf::FloatRect text_bounds = text.getLocalBounds();
+                    text.setOrigin(text_bounds.left + text_bounds.width / 2.0f, text_bounds.top + text_bounds.height / 2.0f);
+                    text.setPosition(btn_rect.left + btn_rect.width / 2.0f, btn_rect.top + btn_rect.height / 2.0f);
+                    window.draw(text);
+                }
+                current_y += button_height + padding_y;
+            }
+            // Отрисовка кнопки "Назад"
+            sf::FloatRect back_rect(window.getSize().x / 2.0f - 100.0f, window.getSize().y - 80.0f, 200.0f, button_height);
+            sf::Color back_color = back_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
+            drawRoundedButton(window, back_rect, corner_radius, back_color);
+            sf::Text back_text(L"Назад", defaultFont, 20);
+            back_text.setFillColor(sf::Color::White);
+            sf::FloatRect back_bounds = back_text.getLocalBounds();
+            back_text.setOrigin(back_bounds.left + back_bounds.width / 2.0f, back_bounds.top + back_bounds.height / 2.0f);
+            back_text.setPosition(back_rect.left + back_rect.width / 2.0f, back_rect.top + back_rect.height / 2.0f);
+            window.draw(back_text);
+        }
+        window.display();
+    }
+    save_to_file("./chess_settings.sett", save_settings);
+}
+void click_on_setting(Board& cBoard, std::wstring category, int x, int y) {
+    save_settings[category][y][x]++;
+    save_data[category][y][x] = all_parameters[category][y][x].action(cBoard, Textures, false, save_data[category][y][x]);
+    save_to_file("./chess_settings.sett", save_settings);
+}
+void click_on_setting(Board& cBoard, std::wstring category, std::vector<std::wstring> names) {
+    int y = 0;
+    for (auto& row: all_parameters[category]) {
+        for (int x = 0; x!=row.size(); x++) {
+            for (std::wstring name: names) {
+                if (name==row[x].name) {
+                    click_on_setting(cBoard, category, x, y);
+                    return;
+                }
+            }
+        }
+        y++;
+    }
+}
+std::wstring find_val_setting(Board& cBoard, std::wstring category, std::vector<std::wstring> values) {
+    int y = 0;
+    for (auto& row: all_parameters[category]) {
+        for (int x = 0; x!=row.size(); x++) {
+            for (std::wstring value: values) {
+                if (value==row[x].name) {
+                    return value;
+                }
+            }
+        }
+        y++;
+    }
+}
+struct full_step {
+    figure moving_figure;
+    figure captured_figure;
+    figure resulting_figure;
+    std::pair<uint8_t, uint8_t> from_cell;
+    std::pair<uint8_t, uint8_t> to_cell;
+    std::pair<uint8_t, uint8_t> prev_cell_capture;
+    bool is_en_passant;
+    std::pair<bool, bool> old_can_castling_op;
+};
 struct Board {
     Array2D<figure, 8, 8> board;
     std::pair<uint8_t, uint8_t> ceil_capture = {255, 255};
@@ -788,12 +1083,17 @@ struct Board {
     bool no_rotate_screen = true;
     bool bot_thinking = false;
     int victory_type = 0; // 0 - нет. 1 - победа белых. 2 - ничья. 3 - победа чёрных
-    std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>>> history;
+    std::vector<full_step> history;
     int history_pos = 0;
     std::optional<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>> hint;
-    std::vector<std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>>> history_hint;
+    std::vector<full_step> history_hint;
     int bot_depth = 7;
     int player_color = -1;
+    std::optional<std::vector<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>>> digit_hint;
+    bool show_thinking_bot = false;
+    std::pair<bool, bool> can_castling_cp = {true, true};
+    std::pair<bool, bool> can_castling_op = {true, true};
+    
 
     inline std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>> get_steps(int x, int y) {
     //inline std::vector<std::pair<uint8_t, uint8_t>> get_steps(int x, int y) {
@@ -827,7 +1127,7 @@ struct Board {
         case figureType::Empty.value:
             return steps;
         case figureType::King.value:
-            steps.reserve(8);
+            steps.reserve(10);
             //{{x-1, y-1}, {x, y-1}, {x+1, y-1}, {x+1, y}, {x+1, y+1}, {x, y+1}, {x-1, y+1}, {x-1, y}}
 
             add_stepif(x - 1, y - 1, ); // Вперед-влево
@@ -840,6 +1140,20 @@ struct Board {
             add_stepif(x - 1, y + 1, ); // Назад-влево
             add_stepif(x,   y + 1, ); // Прямо назад
             add_stepif(x + 1, y + 1, ); // Назад-вправо
+            // Ходы рокировки
+            if (x==3 && y==(mcolor?0:7) && !check_pic(mcolor, x, y)) {
+                // std::cout << "hello" << std::endl;
+                figure mking = board(x, y);
+                board(x, y).type.value = figureType::Empty.value;
+                // std::cout << can_castling_cp.first << std::endl;
+                if (can_castling_cp.first==true && board(x-2, y).type.value==figureType::Empty.value && board(x-1, y).type.value==figureType::Empty.value && !check_pic(mcolor, x-1, y)) {
+                    steps.emplace_back(x-2, y);
+                }
+                if (can_castling_cp.second==true && board(x+3, y).type.value==figureType::Empty.value && board(x+2, y).type.value==figureType::Empty.value && board(x+1, y).type.value==figureType::Empty.value && board(x+1, y).type.value==figureType::Empty.value && !check_pic(mcolor, x+1, y) && !check_pic(mcolor, x+3, y)) {
+                    steps.emplace_back(x+2, y);
+                }
+                board(x, y) = mking;
+            }
             return steps;
         case figureType::Knight.value:
             steps.reserve(8);
@@ -936,6 +1250,15 @@ struct Board {
                 sf::Color ceil_color = (((cx + cy) & 1) ? sf::Color(115, 80, 56) : sf::Color(220, 203, 184));
                 sf::RectangleShape rect;
                 sf::Color colOutLine = sf::Color::White;
+                std::pair<int, bool> digit_hint_ceil = {-1, false};
+                if (std::find(steps.begin(), steps.end(), std::pair<uint8_t, uint8_t>{cx, cy}) != steps.end() && digit_hint) {
+                    for (int i = 0; i!=(*digit_hint).size(); i++) {
+                        if ((*digit_hint)[i].second.first.first.first==select_ceil.first && (*digit_hint)[i].second.first.first.second==select_ceil.second && (*digit_hint)[i].second.first.second.first==cx && (*digit_hint)[i].second.first.second.second==cy) {
+                            digit_hint_ceil = {(*digit_hint)[i].first, true};
+                            break;
+                        }
+                    }
+                }
                 if (select_ceil.first==cx && select_ceil.second==cy) {
                     colOutLine = sf::Color::Blue;
                     if (hint && hint->second.first.first.first==cx && hint->second.first.first.second==cy) {
@@ -962,7 +1285,7 @@ struct Board {
                 else if (board(cx, cy).type==figureType::King && board(cx, cy).getColor()==ccolor && check_pic(ccolor)) {
                     colOutLine = sf::Color::Red;
                 }
-                 else if (history_pos!=0 && ((history[history_pos-1].second.first.first.first==cx && history[history_pos-1].second.first.first.second==cy) || (history[history_pos-1].second.first.second.first==cx && history[history_pos-1].second.first.second.second==cy))) {
+                 else if (history_pos!=0 && ((history[history_pos-1].from_cell.first==cx && history[history_pos-1].from_cell.second==cy) || (history[history_pos-1].to_cell.first==cx && history[history_pos-1].to_cell.second==cy))) {
                     colOutLine = sf::Color(255, 215, 0, 0.45*255);
                 }
 
@@ -1001,6 +1324,19 @@ struct Board {
                         txt.setFont(defaultFont);
                         txt.setFillColor(sf::Color::Black);
                         window.draw(txt);
+                    }
+                    if (digit_hint_ceil.second) {
+                        sf::Text score_ceil;
+                        score_ceil.setFont(defaultFont);
+                        score_ceil.setString(std::to_string(digit_hint_ceil.first));
+                        score_ceil.setCharacterSize(100);
+                        auto size = score_ceil.getLocalBounds().getSize();
+                        float sizex = size.x/100;
+                        float sizey = size.y/100;
+                        score_ceil.setCharacterSize(std::min(size_ceil*0.5/sizex, size_ceil*0.5/sizey));
+                        score_ceil.setPosition(sf::Vector2f(rx+(size_ceil-score_ceil.getCharacterSize()*sizex)*0.5f, ry+(size_ceil-score_ceil.getCharacterSize()*sizey)*0.5f-size_ceil*0.25f));
+                        score_ceil.setFillColor((digit_hint_ceil.first==0?sf::Color::White:(digit_hint_ceil.first<0?sf::Color::Red:sf::Color::Green)));
+                        window.draw(score_ceil);
                     }
                     if (!ccolor && !no_rotate_screen) {
                         rx += size_ceil;
@@ -1041,6 +1377,19 @@ struct Board {
                     txt.setFont(defaultFont);
                     txt.setFillColor(sf::Color::Black);
                     window.draw(txt);
+                }
+                if (digit_hint_ceil.second) {
+                    sf::Text score_ceil;
+                    score_ceil.setFont(defaultFont);
+                    score_ceil.setString(std::to_string(digit_hint_ceil.first));
+                    score_ceil.setCharacterSize(100);
+                    auto size = score_ceil.getLocalBounds().getSize();
+                    float sizex = size.x/100;
+                    float sizey = size.y/100;
+                    score_ceil.setCharacterSize(std::min(size_ceil*0.5/sizex, size_ceil*0.5/sizey));
+                    score_ceil.setPosition(sf::Vector2f(rx+(size_ceil-score_ceil.getCharacterSize()*sizex)*0.5f, ry+(size_ceil-score_ceil.getCharacterSize()*sizey)*0.5f-size_ceil*0.25f));
+                    score_ceil.setFillColor((digit_hint_ceil.first==0?sf::Color::White:(digit_hint_ceil.first<0?sf::Color::Red:sf::Color::Green)));
+                    window.draw(score_ceil);
                 }
                 if (!ccolor && !no_rotate_screen) {
                     rx+=size_ceil;
@@ -1109,7 +1458,7 @@ struct Board {
             window.draw(text);
         }
     }
-    std::pair<std::pair<figure, figure>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> take_a_step(std::pair<uint8_t, uint8_t> pos, std::pair<uint8_t, uint8_t> step) {
+    std::pair<std::pair<figure, figure>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, bool>>> take_a_step(std::pair<uint8_t, uint8_t> pos, std::pair<uint8_t, uint8_t> step) {
         std::pair<uint8_t, uint8_t> pceil_capture = ceil_capture;
         figure af = board(step.first, step.second);
         figure mf = board(pos.first, pos.second);
@@ -1128,8 +1477,42 @@ struct Board {
         } else {
             ceil_capture = {255, 255};
         }
-        return {{mf, af}, {{pos, step}, {pceil_capture, use_capture}}};
+        std::pair<uint8_t, uint8_t> old_can_castling_op = can_castling_cp;
+        can_castling_cp = can_castling_op;
+        can_castling_op = old_can_castling_op;
+        if (mf.type==figureType::King) {
+            if (step.first==1 && can_castling_op.first) {
+                figure rook_f = board(0, pos.second);
+                board(0, pos.second).type.value = figureType::Empty.value;
+                board(2, pos.second) = rook_f;
+            } else if (step.first==5 && can_castling_op.second) {
+                figure rook_f = board(7, pos.second);
+                board(7, pos.second).type.value = figureType::Empty.value;
+                board(4, pos.second) = rook_f;
+            }
+        }
+        if (mf.type==figureType::King) {
+            can_castling_op = {false, false};
+        }
+        if (mf.type==figureType::Rook) {
+            if (pos.first==0) {
+                can_castling_op.first = false;
+            } else if (pos.first==7) {
+                can_castling_op.second = false;
+            }
+        }
+        return {{mf, af}, {{pos, step}, {{pceil_capture, old_can_castling_op}, use_capture}}};
     }
+    /*
+    Par:
+data.first.first:data.moving_figure
+data.first.second.first:data.captured_figure
+data.first.second.second:data.resulting_figure
+data.second.first.first:data.from_cell
+data.second.first.second:data.to_cell
+data.second.second.first:data.prev_cell_capture
+data.second.second.second:data.is_en_passant
+*/
     void take_a_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
         board(data.second.second.first, data.second.second.second) = data.first.second.second;
         board(data.second.first.first, data.second.first.second).type = figureType::Empty;
@@ -1144,20 +1527,68 @@ struct Board {
         } else {
             ceil_capture = {255, 255};
         }
+        std::pair<uint8_t, uint8_t> old = can_castling_op;
+        can_castling_op = can_castling_cp;
+        can_castling_cp = old;
+        if (data.first.first.type==figureType::King) {
+            if (data.second.second.first==1 && can_castling_op.first) {
+                figure rook_f = board(0, data.second.first.second);
+                board(0, data.second.first.second).type.value = figureType::Empty.value;
+                board(2, data.second.first.second) = rook_f;
+            } else if (data.second.second.first==5 && can_castling_op.second) {
+                figure rook_f = board(7, data.second.first.second);
+                board(7, data.second.first.second).type.value = figureType::Empty.value;
+                board(4, data.second.first.second) = rook_f;
+            }
+        }
+        if (data.first.first.type==figureType::King) {
+            can_castling_op = {false, false};
+        }
+        if (data.first.first.type==figureType::Rook) {
+            if (data.second.first.first==0) {
+                can_castling_op.first = false;
+            } else if (data.second.first.first==7) {
+                can_castling_op.second = false;
+            }
+        }
     }
-    void take_a_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
-        board(data.second.first.second.first, data.second.first.second.second) = data.first.second.second;
-        board(data.second.first.first.first, data.second.first.first.second).type = figureType::Empty;
-        if (data.first.first.type==figureType::Pawn && data.second.first.first.first!=data.second.first.second.first && data.second.first.second.first==ceil_capture.first && data.second.first.second.second==ceil_capture.second) {
-            int step = (data.first.first.getColor()?-1:1);
+    void take_a_step(full_step data) {
+        std::pair<uint8_t, uint8_t> old = can_castling_op;
+        can_castling_op = can_castling_cp;
+        can_castling_cp = old;
+        board(data.to_cell.first, data.to_cell.second) = data.resulting_figure;
+        board(data.from_cell.first, data.from_cell.second).type = figureType::Empty;
+        if (data.moving_figure.type==figureType::Pawn && data.from_cell.first!=data.to_cell.first && data.to_cell.first==ceil_capture.first && data.to_cell.second==ceil_capture.second) {
+            int step = (data.moving_figure.getColor()?-1:1);
             board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
         }
-        if (data.first.first.type==figureType::Pawn && abs(data.second.first.first.second-data.second.first.second.second)==2) {
-            ceil_capture = data.second.first.first;
-            int step = (data.first.first.getColor()?-1:1);
+        if (data.moving_figure.type==figureType::Pawn && abs(data.from_cell.second-data.to_cell.second)==2) {
+            ceil_capture = data.from_cell;
+            int step = (data.moving_figure.getColor()?-1:1);
             ceil_capture.second-=step;
         } else {
             ceil_capture = {255, 255};
+        }
+        if (data.moving_figure.type==figureType::King) {
+            if (data.to_cell.first==1 && can_castling_op.first) {
+                figure rook_f = board(0, data.from_cell.second);
+                board(0, data.from_cell.second).type.value = figureType::Empty.value;
+                board(2, data.from_cell.second) = rook_f;
+            } else if (data.to_cell.first==5 && can_castling_op.second) {
+                figure rook_f = board(7, data.from_cell.second);
+                board(7, data.from_cell.second).type.value = figureType::Empty.value;
+                board(4, data.from_cell.second) = rook_f;
+            }
+        }
+        if (data.moving_figure.type==figureType::King) {
+            can_castling_op = {false, false};
+        }
+        if (data.moving_figure.type==figureType::Rook) {
+            if (data.from_cell.first==0) {
+                can_castling_op.first = false;
+            } else if (data.from_cell.first==7) {
+                can_castling_op.second = false;
+            }
         }
     }
     void take_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
@@ -1174,25 +1605,80 @@ struct Board {
         } else {
             ceil_capture = {255, 255};
         }
+        std::pair<uint8_t, uint8_t> old = can_castling_op;
+        can_castling_op = can_castling_cp;
+        can_castling_cp = old;
+        if (data.first.first.type==figureType::King) {
+            if (data.second.second.first==1 && can_castling_op.first) {
+                figure rook_f = board(0, data.second.first.second);
+                board(0, data.second.first.second).type.value = figureType::Empty.value;
+                board(2, data.second.first.second) = rook_f;
+                animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{0, data.second.first.second}, std::pair<uint8_t, uint8_t>{2, data.second.first.second});
+            } else if (data.second.second.first==5 && can_castling_op.second) {
+                figure rook_f = board(7, data.second.first.second);
+                board(7, data.second.first.second).type.value = figureType::Empty.value;
+                board(4, data.second.first.second) = rook_f;
+                animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{7, data.second.first.second}, std::pair<uint8_t, uint8_t>{4, data.second.first.second});
+            }
+        }
+        if (data.first.first.type==figureType::King) {
+            can_castling_op = {false, false};
+        }
+        if (data.first.first.type==figureType::Rook) {
+            if (data.second.first.first==0) {
+                can_castling_op.first = false;
+            } else if (data.second.first.first==7) {
+                can_castling_op.second = false;
+            }
+        }
         animations.emplace_back(0.3, data.second.first, data.second.second);
     }
-    void take_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
-        board(data.second.first.second.first, data.second.first.second.second) = data.first.second.second;
-        board(data.second.first.first.first, data.second.first.first.second).type = figureType::Empty;
-        if (data.first.first.type==figureType::Pawn && data.second.first.first.first!=data.second.first.second.first && data.second.first.second.first==ceil_capture.first && data.second.first.second.second==ceil_capture.second) {
-            int step = (data.first.first.getColor()?-1:1);
+    void take_a_step_anim(full_step data) {
+        board(data.to_cell.first, data.to_cell.second) = data.resulting_figure;
+        board(data.from_cell.first, data.from_cell.second).type = figureType::Empty;
+        if (data.moving_figure.type==figureType::Pawn && data.from_cell.first!=data.to_cell.first && data.to_cell.first==ceil_capture.first && data.to_cell.second==ceil_capture.second) {
+            int step = (data.moving_figure.getColor()?-1:1);
             board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
         }
-        if (data.first.first.type==figureType::Pawn && abs(data.second.first.first.second-data.second.first.second.second)==2) {
-            ceil_capture = data.second.first.first;
-            int step = (data.first.first.getColor()?-1:1);
+        if (data.moving_figure.type==figureType::Pawn && abs(data.from_cell.second-data.to_cell.second)==2) {
+            ceil_capture = data.from_cell;
+            int step = (data.moving_figure.getColor()?-1:1);
             ceil_capture.second-=step;
         } else {
             ceil_capture = {255, 255};
         }
-        animations.emplace_back(0.3, data.second.first.first, data.second.first.second);
+        std::pair<uint8_t, uint8_t> old = can_castling_op;
+        can_castling_op = can_castling_cp;
+        can_castling_cp = old;
+        if (data.moving_figure.type==figureType::King) {
+            if (data.to_cell.first==1 && can_castling_op.first) {
+                figure rook_f = board(0, data.from_cell.second);
+                board(0, data.from_cell.second).type.value = figureType::Empty.value;
+                board(2, data.from_cell.second) = rook_f;
+                animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{0, data.from_cell.second}, std::pair<uint8_t, uint8_t>{2, data.from_cell.second});
+            } else if (data.to_cell.first==5 && can_castling_op.second) {
+                figure rook_f = board(7, data.from_cell.second);
+                board(7, data.from_cell.second).type.value = figureType::Empty.value;
+                board(4, data.from_cell.second) = rook_f;
+                animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{7, data.from_cell.second}, std::pair<uint8_t, uint8_t>{4, data.from_cell.second});
+            }
+        }
+        if (data.moving_figure.type==figureType::King) {
+            can_castling_op = {false, false};
+        }
+        if (data.moving_figure.type==figureType::Rook) {
+            if (data.from_cell.first==0) {
+                can_castling_op.first = false;
+            } else if (data.from_cell.first==7) {
+                can_castling_op.second = false;
+            }
+        }
+        animations.emplace_back(0.3, data.from_cell, data.to_cell);
     }
     void take_a_step_anim(std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> data) {
+        std::pair<uint8_t, uint8_t> old = can_castling_op;
+        can_castling_op = can_castling_cp;
+        can_castling_cp = old;
         board(data.first.second.first, data.first.second.second) = data.second;
         board(data.first.first.first, data.first.first.second).type = figureType::Empty;
         if (data.second.type==figureType::Pawn && data.first.first.first!=data.first.second.first && data.first.second.first==ceil_capture.first && data.first.second.second==ceil_capture.second) {
@@ -1206,38 +1692,109 @@ struct Board {
         } else {
             ceil_capture = {255, 255};
         }
+        if (data.second.type==figureType::King) {
+            if (data.first.second.first==1 && can_castling_op.first) {
+                figure rook_f = board(0, data.first.first.second);
+                board(0, data.first.first.second).type.value = figureType::Empty.value;
+                board(2, data.first.first.second) = rook_f;
+                animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{0, data.first.first.second}, std::pair<uint8_t, uint8_t>{2, data.first.first.second});
+            } else if (data.first.second.first==5 && can_castling_op.second) {
+                figure rook_f = board(7, data.first.first.second);
+                board(7, data.first.first.second).type.value = figureType::Empty.value;
+                board(4, data.first.first.second) = rook_f;
+                animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{7, data.first.first.second}, std::pair<uint8_t, uint8_t>{4, data.first.first.second});
+            }
+        }
+        if (data.second.type==figureType::King) {
+            can_castling_op = {false, false};
+        }
+        if (data.second.type==figureType::Rook) {
+            if (data.first.first.first==0) {
+                can_castling_op.first = false;
+            } else if (data.first.first.first==7) {
+                can_castling_op.second = false;
+            }
+        }
         animations.emplace_back(0.3, data.first.first, data.first.second);
     }
-    void untake_a_step(std::pair<std::pair<figure, figure>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
+    void untake_a_step(std::pair<std::pair<figure, figure>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, bool>>> data) {
         board(data.second.first.first.first, data.second.first.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
         board(data.second.first.second.first, data.second.first.second.second) = data.first.second; // создаём съединую фигуру/пустое поле
-        ceil_capture = data.second.second.first;
+        ceil_capture = data.second.second.first.first;
         if (data.second.second.second) {
             int step = (data.first.first.getColor()?-1:1);
             board(data.second.first.second.first, data.second.first.second.second+step).type = figureType::Pawn;
             board(data.second.first.second.first, data.second.first.second.second+step).setColor(!data.first.first.getColor());
+        }
+        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        can_castling_cp = data.second.second.first.second;
+        can_castling_op = old;
+        if (data.first.first.type==figureType::King) {
+            if (data.second.first.second.first==1 && can_castling_cp.first) {
+                figure rook_f = board(2, data.second.first.first.second);
+                board(2, data.second.first.first.second).type.value = figureType::Empty.value;
+                board(0, data.second.first.first.second) = rook_f;
+                //animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{2, data.second.first.first.second}, std::pair<uint8_t, uint8_t>{0, data.second.first.first.second});
+            } else if (data.second.first.second.first==5 && can_castling_cp.second) {
+                figure rook_f = board(4, data.second.first.first.second);
+                board(4, data.second.first.first.second).type.value = figureType::Empty.value;
+                board(7, data.second.first.first.second) = rook_f;
+                //animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{4, data.second.first.first.second}, std::pair<uint8_t, uint8_t>{7, data.second.first.first.second});
+            }
         }
     }
-    void untake_a_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
-        board(data.second.first.first.first, data.second.first.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
-        board(data.second.first.second.first, data.second.first.second.second) = data.first.second.first; // создаём съединую фигуру/пустое поле
-        ceil_capture = data.second.second.first;
-        if (data.second.second.second) {
-            int step = (data.first.first.getColor()?-1:1);
-            board(data.second.first.second.first, data.second.first.second.second+step).type = figureType::Pawn;
-            board(data.second.first.second.first, data.second.first.second.second+step).setColor(!data.first.first.getColor());
+    void untake_a_step(full_step data) {
+        board(data.from_cell.first, data.from_cell.second) = data.moving_figure; // перемещяем фигуру которая передвигалась
+        board(data.to_cell.first, data.to_cell.second) = data.captured_figure; // создаём съединую фигуру/пустое поле
+        ceil_capture = data.prev_cell_capture;
+        if (data.is_en_passant) {
+            int step = (data.moving_figure.getColor()?-1:1);
+            board(data.to_cell.first, data.to_cell.second+step).type = figureType::Pawn;
+            board(data.to_cell.first, data.to_cell.second+step).setColor(!data.moving_figure.getColor());
+        }
+        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        can_castling_cp = data.old_can_castling_op;
+        can_castling_op = old;
+        if (data.moving_figure.type==figureType::King) {
+            if (data.to_cell.first==1 && can_castling_op.first) {
+                figure rook_f = board(2, data.from_cell.second);
+                board(2, data.from_cell.second).type.value = figureType::Empty.value;
+                board(0, data.from_cell.second) = rook_f;
+                //animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{2, data.from_cell.second}, std::pair<uint8_t, uint8_t>{0, data.from_cell.second});
+            } else if (data.to_cell.first==5 && can_castling_op.second) {
+                figure rook_f = board(4, data.from_cell.second);
+                board(4, data.from_cell.second).type.value = figureType::Empty.value;
+                board(7, data.from_cell.second) = rook_f;
+                //animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{4, data.from_cell.second}, std::pair<uint8_t, uint8_t>{7, data.from_cell.second});
+            }
         }
     }
-    void untake_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data) {
-        board(data.second.first.first.first, data.second.first.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
-        board(data.second.first.second.first, data.second.first.second.second) = data.first.second.first; // создаём съединую фигуру/пустое поле
-        ceil_capture = data.second.second.first;
-        if (data.second.second.second) {
-            int step = (data.first.first.getColor()?-1:1);
-            board(data.second.first.second.first, data.second.first.second.second+step).type = figureType::Pawn;
-            board(data.second.first.second.first, data.second.first.second.second+step).setColor(!data.first.first.getColor());
+    void untake_a_step_anim(full_step data) {
+        board(data.from_cell.first, data.from_cell.second) = data.moving_figure; // перемещяем фигуру которая передвигалась
+        board(data.to_cell.first, data.to_cell.second) = data.captured_figure; // создаём съединую фигуру/пустое поле
+        ceil_capture = data.prev_cell_capture;
+        if (data.is_en_passant) {
+            int step = (data.moving_figure.getColor()?-1:1);
+            board(data.to_cell.first, data.to_cell.second+step).type = figureType::Pawn;
+            board(data.to_cell.first, data.to_cell.second+step).setColor(!data.moving_figure.getColor());
         }
-        animations.emplace_back(0.3, data.second.first.second, data.second.first.first);
+        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        can_castling_cp = data.old_can_castling_op;
+        can_castling_op = old;
+        if (data.moving_figure.type==figureType::King) {
+            if (data.to_cell.first==1 && can_castling_op.first) {
+                figure rook_f = board(2, data.from_cell.second);
+                board(2, data.from_cell.second).type.value = figureType::Empty.value;
+                board(0, data.from_cell.second) = rook_f;
+                animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{2, data.from_cell.second}, std::pair<uint8_t, uint8_t>{0, data.from_cell.second});
+            } else if (data.to_cell.first==5 && can_castling_op.second) {
+                figure rook_f = board(4, data.from_cell.second);
+                board(4, data.from_cell.second).type.value = figureType::Empty.value;
+                board(7, data.from_cell.second) = rook_f;
+                animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{4, data.from_cell.second}, std::pair<uint8_t, uint8_t>{7, data.from_cell.second});
+            }
+        }
+        animations.emplace_back(0.3, data.to_cell, data.from_cell);
     }
     int check_end(bool color) { // 0 - нет. 1 - мат. 2 - ничья
         bool need_check = false;
@@ -1323,28 +1880,30 @@ struct Board {
             }
             if (king_x != -1) break;
         }
-        if (king_x == -1) return false;
+        return check_pic(ccolor, king_x, king_y);
+    }
+    bool check_pic(bool ccolor, int x, int y) {
+        if (x == -1) return false;
         for (int cy = 0; cy < 8; cy++) {
             for (int cx = 0; cx < 8; cx++) {
                 figure f = board(cx, cy);
                 if (f.type == figureType::Empty || f.getColor() == ccolor) {
                     continue;
                 }
-                int dx = abs(cx - king_x);
-                int dy = abs(cy - king_y);
-                if (f.type == figureType::Rook && cx != king_x && cy != king_y) continue;
-                if (f.type == figureType::Bishop && dx != dy) continue;
-                if (f.type == figureType::Queen && cx != king_x && cy != king_y && dx != dy) continue;
-                if (f.type == figureType::Knight && !((dx == 1 && dy == 2) || (dx == 2 && dy == 1))) continue;
-                if (f.type == figureType::King && (dx > 1 || dy > 1)) continue;
-                if (f.type == figureType::Pawn) {
-                    if (dx != 1) continue; 
-                    int pawn_step = (f.getColor() ? -1 : 1); 
-                    if (king_y != cy - pawn_step) continue; 
-                }
-                for (const auto& step : get_steps(cx, cy)) {
-                    if (step.first == king_x && step.second == king_y) {
+                int dx = abs(cx - x);
+                int dy = abs(cy - y);
+                if (f.type==figureType::King) {
+                    if (dx==dy && dy==0) {
+                        continue;
+                    }
+                    if (abs(dx)<2 && abs(dy)<2) {
                         return true;
+                    }
+                } else {
+                    for (const auto& step : get_steps(cx, cy)) {
+                        if (step.first == x && step.second == y) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -1560,10 +2119,82 @@ struct Board {
 
         return {best_score, best_step};
     }
-    int calc_score_step(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data_step, int depth=6) {
+    std::vector<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>> make_move_score(bool color, int depth = 8, int score_cache=0) {
+        num = 0;
+        std::unordered_map<Sboard, int> table_transpositions;
+        int best_score = -1000000;
+        //std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> best_step;
+        std::vector<std::pair<int, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure>>> steps_score;
+        // parallel_if(depth==6, Board board_copy = *this;, 0, 8, cy, 
+        // std::vector<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>, LinearPoolAllocator<std::pair<std::vector<std::pair<uint8_t, uint8_t>, LinearPoolAllocator<std::pair<uint8_t, uint8_t>>>, std::pair<uint8_t, uint8_t>>>> steps_all;
+        // steps_all.reserve(32);
+        int8_t valNoMeKing = figureType::King.value;
+        if (color) {
+            valNoMeKing = -valNoMeKing;
+        }
+        bool ncolor = !color;
+        bool has_moves = false;
+        for (int cy = 0; cy != 8; cy++) {
+            for (int cx = 0; cx != 8; cx++) {
+                figure f = board(cx, cy);
+                bool change_to_pawn = abs(f.type.value, ncolor)==figureType::Pawn.value && ((cy==6 && color) || (cy==1 && ncolor));
+                if (f.type.value != figureType::Empty.value && f.getColor() == color) {
+                    auto steps = get_steps(cx, cy);
+                    for (auto step : steps) {
+                        //std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        has_moves = true;
+                        int score = 0;
+                        int new_score_cache = score_cache;
+                        figure af = board(step.first, step.second);
+                        bool kill_king = af.type.value == valNoMeKing;
+                        if (!kill_king) {
+                            new_score_cache += abs(af.type.value, color);
+                        }
+                        
+                        auto data = take_a_step({cx, cy}, step);
+                        //std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        #define two_for(var, ifvar, ...) if (var) {for (int i = 0; i!=ifvar; i++) {__VA_ARGS__}} else {int i = 0; __VA_ARGS__}
+                        two_for(change_to_pawn, 4, 
+                            if (change_to_pawn) {
+                                board(step.first, step.second).setType(ftcf[i]);
+                                new_score_cache += ftcf[i].value-1;
+                                if (i!=0) {
+                                    new_score_cache -= ftcf[i-1].value-1;
+                                }
+                            }
+                            num++;
+                            if (kill_king) {
+                                // score = 900000 + depth*100 + calc_score(color);
+                                score = 900000 + depth*100 + new_score_cache;
+                            } else {
+                                if (depth == 1) {
+                                    //score = calc_score(color);
+                                    score = new_score_cache;
+                                } else {
+                                    score = -make_move_calc(ncolor, table_transpositions, depth - 1, -1000000, 1000000, -new_score_cache);
+                                }
+                            }
+                            steps_score.push_back({score, {{{cx, cy}, step}, board(step.first, step.second)}});
+                        )
+                        #undef two_for
+                        untake_a_step(data);
+                        //std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                }   
+            }        
+        }
+        std::cout.flush(); 
+        _setmode(_fileno(stdout), _O_U16TEXT);
+        std::wcout << L"Бот Использовал: " << CountBytes(get_unordered_map_heap_size(table_transpositions)).toString1valW() << L"\n";
+        std::wcout.flush(); 
+        _setmode(_fileno(stdout), _O_TEXT);
+
+        return steps_score;
+    }
+    int calc_score_step(full_step data_step, int depth=6) {
         int score = 0;
         //figure f = board(data_step.second.first.first.first, data_step.second.first.first.second);
-        bool kill_king = board(data_step.second.first.second.first, data_step.second.first.second.second).type == figureType::King;
+        bool kill_king = board(data_step.to_cell.first, data_step.to_cell.second).type == figureType::King;
         
         take_a_step(data_step);
         if (kill_king) {
@@ -1604,17 +2235,25 @@ struct Board {
         if (event.type==sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
             int x_click = event.mouseButton.x;
             int y_click = event.mouseButton.y;
+            int size = this->size;
+            int size_ceil = size*0.125;
+            if (!ccolor && !no_rotate_screen) {
+                x += size_ceil*0.24;
+                y += size_ceil*0.24;
+            }
+            size-=size_ceil*0.24;
+            size_ceil = size*0.125;
             if (x_click>=x && y_click>=y && x_click<=x+size && y_click<=y+size) {
                 x_click-=x;
                 y_click-=y;
 
-                x_click/=(size*0.125);
-                y_click/=(size*0.125);
+                x_click/=(size_ceil);
+                y_click/=(size_ceil);
                 if (ccolor || no_rotate_screen) {
                     y_click=7-y_click;
                     x_click=7-x_click;
                 }
-                if (animations.empty() && victory_type==0 && !bot_thinking && (ccolor==player_color || player_color==-1) && history_hint.empty()) {
+                if (animations.empty() && victory_type==0 && !bot_thinking && (ccolor==player_color || player_color==-1) && (history_hint.empty() || digit_hint)) {
                     if (select_ceil.first==255) {
                         if (board(x_click, y_click).type!=figureType::Empty && board(x_click, y_click).getColor()==ccolor) {
                             select_ceil.first = x_click;
@@ -1623,128 +2262,97 @@ struct Board {
                     } else {
                         auto steps = get_steps(select_ceil.first, select_ceil.second);
                         bool found = false;
-                        for (auto step: steps) {
-                            if (step.first==x_click && step.second==y_click) {
-                                auto d = take_a_step(select_ceil, step);
-                                if (check_pic(ccolor)) {
+                        if (history_hint.empty()) {
+                            for (auto step: steps) {
+                                if (step.first==x_click && step.second==y_click) {
+                                    
+                                    auto d = take_a_step(select_ceil, step);
+                                    if (check_pic(ccolor)) {
+                                        untake_a_step(d);
+                                        break;
+                                    }
                                     untake_a_step(d);
-                                    break;
-                                }
-                                untake_a_step(d);
-                                figure f = board(select_ceil.first, select_ceil.second);
-                                std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> data = {{f, {board(step.first, step.second), f}}, {{select_ceil, step}, {ceil_capture, false}}};
-                                if (f.type==figureType::Pawn && ((step.second==7 && f.getColor()) || (step.second==0 && !f.getColor()))) {
-                                    int select = showPromotionWindow(window, {
-                                        {Textures.getTexture(figureType::Queen), L"ферзь"},
-                                        {Textures.getTexture(figureType::Knight), L"конь"},
-                                        {Textures.getTexture(figureType::Rook), L"ладья"},
-                                        {Textures.getTexture(figureType::Bishop), L"слон"},
-                                    });
-                                    if (select==0) f.setType(figureType::Queen);
-                                    else if (select==1) f.setType(figureType::Knight);
-                                    else if (select==2) f.setType(figureType::Rook);
-                                    else if (select==3) f.setType(figureType::Bishop);
-                                    else window.close();
-                                }
-                                if (history.size()!=history_pos) {
-                                    history.resize(history_pos);
-                                }
-                                board(select_ceil.first, select_ceil.second).type = figureType::Empty;
-                                data.first.second.second = f;
-                                board(step.first, step.second) = f;
-                                animations.emplace_back(0.3, select_ceil, step);
-                                if (data.first.first.type==figureType::Pawn && data.second.first.first.first!=data.second.first.second.first && data.second.first.second.first==ceil_capture.first && data.second.first.second.second==ceil_capture.second) {
-                                    int step = (data.first.first.getColor()?-1:1);
-                                    board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
-                                    data.second.second.second = true;
-                                }
-                                if (data.first.first.type==figureType::Pawn && abs(data.second.first.first.second-data.second.first.second.second)==2) {
-                                    ceil_capture = data.second.first.first;
-                                    int step = (data.first.first.getColor()?-1:1);
-                                    ceil_capture.second-=step;
-                                } else {
-                                    ceil_capture = {255, 255};
-                                }
-                                history.insert(history.begin()+history_pos, data);
-                                history_pos++;
-                                if (connection!=nullptr) {
-                                    std::vector<uint8_t> send_data(7);
-                                    std::memcpy(send_data.data(), &data, send_data.size());
-                                    connection->send(send_data);
-                                }
-
-                                // сбрасываем выделение
-                                select_ceil.first = 255;
-                                select_ceil.second = 255;
-
-                                if (check_win()) {
+                                    figure f = board(select_ceil.first, select_ceil.second);
+                                    full_step data = {f, board(step.first, step.second), f, select_ceil, step, ceil_capture, false, can_castling_cp};
+                                    if (f.type==figureType::Pawn && ((step.second==7 && f.getColor()) || (step.second==0 && !f.getColor()))) {
+                                        int select = showPromotionWindow(window, {
+                                            {Textures.getTexture(figureType::Queen), L"ферзь"},
+                                            {Textures.getTexture(figureType::Knight), L"конь"},
+                                            {Textures.getTexture(figureType::Rook), L"ладья"},
+                                            {Textures.getTexture(figureType::Bishop), L"слон"},
+                                        });
+                                        if (select==0) f.setType(figureType::Queen);
+                                        else if (select==1) f.setType(figureType::Knight);
+                                        else if (select==2) f.setType(figureType::Rook);
+                                        else if (select==3) f.setType(figureType::Bishop);
+                                        else window.close();
+                                    }
+                                    if (history.size()!=history_pos) {
+                                        history.resize(history_pos);
+                                    }
+                                    board(select_ceil.first, select_ceil.second).type = figureType::Empty;
+                                    data.resulting_figure = f;
+                                    board(step.first, step.second) = f;
+                                    animations.emplace_back(0.3, select_ceil, step);
+                                    if (data.moving_figure.type==figureType::Pawn && data.from_cell.first!=data.to_cell.first && data.to_cell.first==ceil_capture.first && data.to_cell.second==ceil_capture.second) {
+                                        int step = (data.moving_figure.getColor()?-1:1);
+                                        board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+                                        data.is_en_passant = true;
+                                    }
+                                    if (data.moving_figure.type==figureType::Pawn && abs(data.from_cell.second-data.to_cell.second)==2) {
+                                        ceil_capture = data.from_cell;
+                                        int step = (data.moving_figure.getColor()?-1:1);
+                                        ceil_capture.second-=step;
+                                    } else {
+                                        ceil_capture = {255, 255};
+                                    }
+                                    std::pair<uint8_t, uint8_t> old = can_castling_op;
+                                    can_castling_op = can_castling_cp;
+                                    can_castling_cp = old;
+                                    if (data.moving_figure.type==figureType::King) {
+                                        if (data.to_cell.first==1 && can_castling_op.first) {
+                                            figure rook_f = board(0, data.from_cell.second);
+                                            board(0, data.from_cell.second).type.value = figureType::Empty.value;
+                                            board(2, data.from_cell.second) = rook_f;
+                                            animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{0, data.from_cell.second}, std::pair<uint8_t, uint8_t>{2, data.from_cell.second});
+                                        } else if (data.to_cell.first==5 && can_castling_op.second) {
+                                            figure rook_f = board(7, data.from_cell.second);
+                                            board(7, data.from_cell.second).type.value = figureType::Empty.value;
+                                            board(4, data.from_cell.second) = rook_f;
+                                            animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{7, data.from_cell.second}, std::pair<uint8_t, uint8_t>{4, data.from_cell.second});
+                                        }
+                                    }
+                                    if (data.moving_figure.type==figureType::King) {
+                                        can_castling_op = {false, false};
+                                    }
+                                    if (data.moving_figure.type==figureType::Rook) {
+                                        if (data.from_cell.first==0) {
+                                            can_castling_op.first = false;
+                                        } else if (data.from_cell.first==7) {
+                                            can_castling_op.second = false;
+                                        }
+                                    }
+                                    history.insert(history.begin()+history_pos, data);
+                                    history_pos++;
                                     if (connection!=nullptr) {
-                                        std::pair<int, uint8_t> data_end = {elo, victory_type};
-                                        std::vector<uint8_t> send_data;
-                                        send_data.assign((uint8_t*)&data_end, ((uint8_t*)&data_end)+sizeof(data_end));
+                                        std::vector<uint8_t> send_data(7);
+                                        std::memcpy(send_data.data(), &data, send_data.size());
                                         connection->send(send_data);
-                                    } else if (bot==true) {
-                                        double expected = 1.0 / (1.0 + pow(10.0, (get_bot_elo() - elo) / 400.0)); // ожидаемый результат
-                                        // 2. Определяем реальный результат игрока (S)
-                                        double actual = 0.5;
-                                        if (victory_type == 1) {
-                                            actual = ((!ccolor) == 1) ? 1.0 : 0.0; // Победа белых
-                                        } else if (victory_type == 3) {
-                                            actual = ((!ccolor) == 0) ? 1.0 : 0.0; // Победа чёрных
-                                        }
-                                        int K = 32; // 40 для новичков, 32 для базы
-                                        elo = std::round(elo + K * (actual - expected));
-                                        std::ofstream("elo.bin", std::ios::binary).write(reinterpret_cast<const char*>(&elo), sizeof(elo));
                                     }
-                                    return;
-                                }
-                                if (!bot) {
-                                    ccolor = !ccolor;
-                                    if (hint) {
-                                        hint = make_move(ccolor, bot_depth-1);
-                                    }
-                                }
-                                found = true;
-                                
 
-                                if (bot) {
-                                    bot_thinking = true;
-                                    std::thread th([&]() {
-                                        Board board_copy = *this; 
-                                        clock_t t = clock();
-                                        unsigned long long start_bars = __rdtsc();
-                                        auto [score, bot_step] = board_copy.make_move(!ccolor, bot_depth);
-                                        unsigned long long end_bars = __rdtsc();
-                                        t = clock() - t; // Вычисляем разницу в тактах 
-                                        std::cout << "score:" << score << std::endl;
-                                        std::cout << "bars:" << end_bars-start_bars << std::endl;
-                                        // std::cout << "steps:" << (end_bars-start_bars)/100 << "-" << (end_bars-start_bars)/80 << std::endl;
-                                        std::cout << "time:" << (double)t / CLOCKS_PER_SEC << " seconds" << std::endl;
-                                        std::cout << "real_steps:" << board_copy.num << std::endl;
-                                        std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {{bot_step.first.first, bot_step.first.second}, {ceil_capture, false}}};
-                                        board(bot_step.first.second.first, bot_step.first.second.second) = bot_step.second;
-                                        board(bot_step.first.first.first, bot_step.first.first.second).type = figureType::Empty;
-                                        if (bot_data.first.first.type==figureType::Pawn && bot_data.second.first.first.first!=bot_data.second.first.second.first && bot_data.second.first.second.first==ceil_capture.first && bot_data.second.first.second.second==ceil_capture.second) {
-                                            int step = (bot_data.first.first.getColor()?-1:1);
-                                            board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
-                                            bot_data.second.second.second = true;
-                                        }
-                                        if (bot_data.first.first.type==figureType::Pawn && abs(bot_data.second.first.first.second-bot_data.second.first.second.second)==2) {
-                                            ceil_capture = bot_data.second.first.first;
-                                            int step = (bot_data.first.first.getColor()?-1:1);
-                                            ceil_capture.second-=step;
-                                        } else {
-                                            ceil_capture = {255, 255};
-                                        }
+                                    // сбрасываем выделение
+                                    select_ceil.first = 255;
+                                    select_ceil.second = 255;
 
-                                        animations.emplace_back(0.3, bot_step.first.first, bot_step.first.second);
-                                        // записываем в историю
-                                        history.insert(history.begin()+history_pos, bot_data);
-                                        history_pos++;
-                                        // проверяем на победы
-                                        if (check_win()) {
+                                    if (check_win()) {
+                                        if (connection!=nullptr) {
+                                            std::pair<int, uint8_t> data_end = {elo, victory_type};
+                                            std::vector<uint8_t> send_data;
+                                            send_data.assign((uint8_t*)&data_end, ((uint8_t*)&data_end)+sizeof(data_end));
+                                            connection->send(send_data);
+                                        } else if (bot==true) {
                                             double expected = 1.0 / (1.0 + pow(10.0, (get_bot_elo() - elo) / 400.0)); // ожидаемый результат
-                                            // Определяем реальный результат игрока (S)
+                                            // 2. Определяем реальный результат игрока (S)
                                             double actual = 0.5;
                                             if (victory_type == 1) {
                                                 actual = ((!ccolor) == 1) ? 1.0 : 0.0; // Победа белых
@@ -1754,16 +2362,105 @@ struct Board {
                                             int K = 32; // 40 для новичков, 32 для базы
                                             elo = std::round(elo + K * (actual - expected));
                                             std::ofstream("elo.bin", std::ios::binary).write(reinterpret_cast<const char*>(&elo), sizeof(elo));
-                                            return;
                                         }
+                                        return;
+                                    }
+                                    if (!bot) {
+                                        ccolor = !ccolor;
                                         if (hint) {
                                             hint = make_move(ccolor, bot_depth-1);
+                                            if (digit_hint) {
+                                                digit_hint = make_move_score(ccolor, bot_depth-1);
+                                            }
                                         }
-                                        bot_thinking = false;
-                                    });
-                                    th.detach();
+                                    }
+                                    found = true;
+
+                                    if (bot) {
+                                        bot_thinking = true;
+                                        std::thread th([&]() {
+                                            Board board_copy = *this; 
+                                            clock_t t = clock();
+                                            unsigned long long start_bars = __rdtsc();
+                                            int score;
+                                            std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> bot_step;
+                                            if (show_thinking_bot) {
+                                                auto res = make_move(!ccolor, bot_depth);
+                                                score = res.first;
+                                                bot_step = res.second;
+                                            } else {
+                                                auto res = board_copy.make_move(!ccolor, bot_depth);
+                                                score = res.first;
+                                                bot_step = res.second;
+                                            }
+                                            unsigned long long end_bars = __rdtsc();
+                                            t = clock() - t; // Вычисляем разницу в тактах 
+                                            std::cout << "score:" << score << std::endl;
+                                            std::cout << "bars:" << end_bars-start_bars << std::endl;
+                                            // std::cout << "steps:" << (end_bars-start_bars)/100 << "-" << (end_bars-start_bars)/80 << std::endl;
+                                            std::cout << "time:" << (double)t / CLOCKS_PER_SEC << " seconds" << std::endl;
+                                            std::cout << "real_steps:" << board_copy.num << std::endl;
+                                            full_step bot_data = {board(bot_step.first.first.first, bot_step.first.first.second), board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second, bot_step.first.first, bot_step.first.second, ceil_capture, false, can_castling_cp};
+                                            board(bot_step.first.second.first, bot_step.first.second.second) = bot_step.second;
+                                            board(bot_step.first.first.first, bot_step.first.first.second).type = figureType::Empty;
+                                            if (data.moving_figure.type==figureType::Pawn && data.from_cell.first!=data.to_cell.first && data.to_cell.first==ceil_capture.first && data.to_cell.second==ceil_capture.second) {
+                                                int step = (data.moving_figure.getColor()?-1:1);
+                                                board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
+                                                data.is_en_passant = true;
+                                            }
+                                            if (data.moving_figure.type==figureType::Pawn && abs(data.from_cell.second-data.to_cell.second)==2) {
+                                                ceil_capture = data.from_cell;
+                                                int step = (data.moving_figure.getColor()?-1:1);
+                                                ceil_capture.second-=step;
+                                            } else {
+                                                ceil_capture = {255, 255};
+                                            }
+                                            if (data.moving_figure.type==figureType::King) {
+                                                can_castling_op = {false, false};
+                                            }
+                                            if (data.moving_figure.type==figureType::Rook) {
+                                                if (data.from_cell.first==0) {
+                                                    can_castling_op.first = false;
+                                                } else if (data.from_cell.first==7) {
+                                                    can_castling_op.second = false;
+                                                }
+                                            }
+                                            std::pair<uint8_t, uint8_t> old = can_castling_op;
+                                            can_castling_op = can_castling_cp;
+                                            can_castling_cp = old;
+
+                                            animations.emplace_back(0.3, bot_step.first.first, bot_step.first.second);
+                                            // записываем в историю
+                                            history.insert(history.begin()+history_pos, bot_data);
+                                            history_pos++;
+                                            board_copy = *this;
+                                            // проверяем на победы
+                                            if (board_copy.check_win()) {
+                                                double expected = 1.0 / (1.0 + pow(10.0, (get_bot_elo() - elo) / 400.0)); // ожидаемый результат
+                                                // Определяем реальный результат игрока (S)
+                                                double actual = 0.5;
+                                                if (victory_type == 1) {
+                                                    actual = ((!ccolor) == 1) ? 1.0 : 0.0; // Победа белых
+                                                } else if (victory_type == 3) {
+                                                    actual = ((!ccolor) == 0) ? 1.0 : 0.0; // Победа чёрных
+                                                }
+                                                int K = 32; // 40 для новичков, 32 для базы
+                                                elo = std::round(elo + K * (actual - expected));
+                                                std::ofstream("elo.bin", std::ios::binary).write(reinterpret_cast<const char*>(&elo), sizeof(elo));
+                                                return;
+                                            }
+                                            if (hint) {
+                                                hint = board_copy.make_move(ccolor, bot_depth-1);
+                                                if (digit_hint) {
+                                                    digit_hint = board_copy.make_move_score(ccolor, bot_depth-1);
+                                                }
+                                            }
+                                            bot_thinking = false;
+                                        });
+                                        th.detach();
+                                    }
+                                    break;
                                 }
-                                break;
                             }
                         }
                         if (!found) {
@@ -1787,16 +2484,22 @@ struct Board {
                 }
             } else if (event.key.code==sf::Keyboard::A) {
                 if (event.key.alt) {
-                    if (hint) {
-                        hint = std::nullopt;
-                        for (int i = history_hint.size()-1; i!=-1; i++) {
-                            untake_a_step(history_hint[i]);
-                            ccolor = !ccolor;
-                        }
-                        history_hint.clear();
-                    } else {
-                        hint = make_move(ccolor, bot_depth-1);
-                    }
+                    click_on_setting(*this, L"Игра", {L"Подсказки: Вкл", L"Подсказки: Выкл"});
+                    // if (hint) {
+                    //     hint = std::nullopt;
+                    //     for (int i = history_hint.size()-1; i!=-1; i++) {
+                    //         untake_a_step(history_hint[i]);
+                    //         ccolor = !ccolor;
+                    //     }
+                    //     history_hint.clear();
+                        
+                    // } else {
+                    //     hint = make_move(ccolor, bot_depth-1);
+                    // }
+                    // if (find_val_setting(*this, L"Игра", {L"Подсказки: Вкл", L"Подсказки: Выкл"})==(hint?L"Подсказки: Выкл": L"Подсказки: Вкл")) {
+                        
+
+                    // }
                 }
             } else if (event.key.code == sf::Keyboard::D) {
                 int depth = getNumber("select depth bot", "select depth (current depth "+std::to_string(bot_depth)+")", window);
@@ -1806,16 +2509,66 @@ struct Board {
             }
         } else if (event.type == sf::Event::TextEntered) {
             if (event.text.unicode == '?') { 
-                if (hint && bot_depth-1-(int)history_hint.size()>0 && animations.empty()) {
-                    auto bot_step = hint->second;
-                    std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<uint8_t, uint8_t>, bool>>> bot_data = {{board(bot_step.first.first.first, bot_step.first.first.second), {board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second}}, {{bot_step.first.first, bot_step.first.second}, {ceil_capture, false}}};
-                    if (bot_data.first.first.type==figureType::Pawn && abs(bot_data.second.first.first.second-bot_data.second.first.second.second)==2) {
-                        bot_data.second.second.second = true;
+                if (hint && bot_depth-1-(int)history_hint.size()>1 && animations.empty()) {
+                    if ((select_ceil.first==255 && select_ceil.second==255) || !digit_hint) {
+                        auto bot_step = hint->second;
+                        full_step bot_data = {board(bot_step.first.first.first, bot_step.first.first.second), board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second, bot_step.first.first, bot_step.first.second, ceil_capture, false, can_castling_cp};
+                        // if (bot_data.first.first.type==figureType::Pawn && abs((int8_t)bot_data.second.first.first.second-(int8_t)bot_data.second.first.second.second)==2) {
+                        //     bot_data.second.second.second = true;
+                        // }
+                        take_a_step_anim(hint->second);
+                        ccolor = !ccolor;
+                        hint = make_move(ccolor, bot_depth-1-history_hint.size());
+                        history_hint.push_back(bot_data);
+                        if (digit_hint) {
+                            digit_hint = make_move_score(ccolor, bot_depth-1-history_hint.size());
+                        }
+                    } else if (digit_hint) {
+                        int x_click = sf::Mouse::getPosition(window).x;
+                        int y_click = sf::Mouse::getPosition(window).y;
+                        int size = this->size;
+                        int size_ceil = size*0.125;
+                        if (!ccolor && !no_rotate_screen) {
+                            x += size_ceil*0.24;
+                            y += size_ceil*0.24;
+                        }
+                        size-=size_ceil*0.24;
+                        size_ceil = size*0.125;
+                        if (x_click>=x && y_click>=y && x_click<=x+size && y_click<=y+size) {
+                            x_click-=x;
+                            y_click-=y;
+
+                            x_click/=(size_ceil);
+                            y_click/=(size_ceil);
+                            if (ccolor || no_rotate_screen) {
+                                y_click=7-y_click;
+                                x_click=7-x_click;
+                            }
+                            auto steps = get_steps(select_ceil.first, select_ceil.second);
+                            if (std::find(steps.begin(), steps.end(), std::pair<uint8_t, uint8_t>(x_click, y_click))!=steps.end()) {
+                                std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> bot_step;
+                                for (auto& step: *digit_hint) {
+                                    if (step.second.first.first.first==select_ceil.first && step.second.first.first.second==select_ceil.second && step.second.first.second.first==x_click && step.second.first.second.second==y_click) {
+                                        bot_step = step.second;
+                                        break;
+                                    }
+                                }
+                                full_step bot_data = {board(bot_step.first.first.first, bot_step.first.first.second), board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second, bot_step.first.first, bot_step.first.second, ceil_capture, false, can_castling_cp};
+                                // if (bot_data.first.first.type==figureType::Pawn && abs((int8_t)bot_data.second.first.first.second-(int8_t)bot_data.second.first.second.second)==2) {
+                                //     bot_data.second.second.second = true;
+                                // }
+                                take_a_step_anim(bot_step);
+                                ccolor = !ccolor;
+                                hint = make_move(ccolor, bot_depth-1-history_hint.size());
+                                history_hint.push_back(bot_data);
+                                if (digit_hint) {
+                                    digit_hint = make_move_score(ccolor, bot_depth-1-history_hint.size());
+                                }
+                                select_ceil.first = 255;
+                                select_ceil.second = 255;
+                            }
+                        }
                     }
-                    take_a_step_anim(hint->second);
-                    ccolor = !ccolor;
-                    hint = make_move(ccolor, bot_depth-1-history_hint.size());
-                    history_hint.push_back(bot_data);
                 }
             }
         }
@@ -1828,8 +2581,11 @@ struct Board {
             history_hint.pop_back();
             untake_a_step_anim(bot_data);
             ccolor = !ccolor;
-            std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> bot_step = {bot_data.second.first, bot_data.first.second.second};
+            std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> bot_step = {{bot_data.from_cell, bot_data.to_cell}, bot_data.resulting_figure};
             hint = {0, bot_step};
+            if (digit_hint) {
+                digit_hint = make_move_score(ccolor, bot_depth-1-history_hint.size());
+            }
             return;
         }
         int num_steps = -1;
@@ -1842,10 +2598,11 @@ struct Board {
             }
             untake_a_step_anim(history[history_pos]);
             ccolor=!ccolor;
-            if (hint && i+1==abs(num_steps)) {
-                hint = make_move(ccolor, bot_depth-1);
-            } else {
-                hint = std::nullopt;
+        }
+        if (hint) {
+            hint = make_move(ccolor, bot_depth-1);
+            if (digit_hint) {
+                digit_hint = make_move_score(ccolor, bot_depth-1);
             }
         }
     }
@@ -1862,10 +2619,11 @@ struct Board {
             take_a_step_anim(history[history_pos]);
             history_pos++;
             ccolor = !ccolor;
-            if (hint && i+1==abs(num_steps)) {
-                hint = make_move(ccolor, bot_depth-1);
-            } else {
-                hint = std::nullopt;
+        }
+        if (hint) {
+            hint = make_move(ccolor, bot_depth-1);
+            if (digit_hint) {
+                digit_hint = make_move_score(ccolor, bot_depth-1);
             }
         }
     }
@@ -1914,7 +2672,9 @@ struct Board {
         victory_type = 0;
         select_ceil.first = 255;
         select_ceil.second = 255;
-        hint = std::nullopt;
+        can_castling_op = {true, true};
+        can_castling_cp = {true, true};
+        ceil_capture = {-1, -1};
         history_hint.clear();
         if (filename.ends_with(".txt") || filename.ends_with(".cmap")) {
             std::string content_str = std::string(content.begin(), content.end());
@@ -1958,34 +2718,34 @@ struct Board {
             history.resize(size);
             int j = 0;
             for (int i = 4; i!=4+size_of_bytes; i+=sizeof(history[0])) {
-                history[j].first.first.type = content[i];
-                history[j].first.second.first.type = content[i+1];
-                history[j].first.second.second.type = content[i+2];
-                history[j].second.first.first.first = content[i+3];
-                history[j].second.first.first.second = content[i+4];
-                history[j].second.first.second.first = content[i+5];
-                history[j].second.first.second.second = content[i+6];
-                history[j].second.second.first.first = content[i+7];
-                history[j].second.second.first.second = content[i+8];
-                history[j].second.second.second = content[i+9];
+                uint8_t* buff = (uint8_t*)(&history[j]);
+                for (int k = 0; k!=sizeof(history[0]); k++) {
+                    buff[k] = content[i+k];
+                }
                 j++;
             }
             
             for (auto step: history) {
                 take_a_step(step);
                 ccolor = !ccolor;
-                if (step.second.first.first.first>=8 || (uint8_t)step.second.first.first.second>=8 || step.second.first.second.first>=8 || (uint8_t)step.second.first.second.second>=8) {
+                if (step.from_cell.first>=8 || (uint8_t)step.from_cell.second>=8 || step.to_cell.first>=8 || (uint8_t)step.to_cell.second>=8) {
                     std::cout << "bad file. error: invalid step" << std::endl;
                     loadFromFileNC(L"start.txt");
                     return;
                 }
-                if (!step.first.first.checkValidity() || !step.first.second.first.checkValidity() || !step.first.second.second.checkValidity()) {
+                if (!step.moving_figure.checkValidity() || !step.captured_figure.checkValidity() || !step.resulting_figure.checkValidity()) {
                     std::cout << "bad file. error: invalid figure in step" << std::endl;
                     loadFromFileNC(L"start.txt");
                     return;
                 }
             }
             history_pos = history.size();
+        }
+        if (hint) {
+            hint = make_move(ccolor, bot_depth-1);
+            if (digit_hint) {
+                digit_hint = make_move_score(ccolor, bot_depth-1);
+            }
         }
     }
     void saveInFile(std::wstring filename) {
@@ -2029,16 +2789,10 @@ struct Board {
             data[3] = history.size()>>24;
             int j = 0;
             for (int i = 4; i!=4+size_of_bytes; i+=sizeof(history[0])) {
-                data[i] = history[j].first.first.type.value;
-                data[i+1] = history[j].first.second.first.type.value;
-                data[i+2] = history[j].first.second.second.type.value;
-                data[i+3] = history[j].second.first.first.first;
-                data[i+4] = history[j].second.first.first.second;
-                data[i+5] = history[j].second.first.second.first;
-                data[i+6] = history[j].second.first.second.second;
-                data[i+7] = history[j].second.second.first.first;
-                data[i+8] = history[j].second.second.first.second;
-                data[i+9] = history[j].second.second.second;
+                uint8_t* buff = (uint8_t*)(&history[j]);
+                for (int k = 0; k!=sizeof(history[0]); k++) {
+                    data[i+k] = buff[k];
+                }
                 j++;
             }
             std::ofstream file(filename.c_str(), std::ios::binary);
@@ -2753,9 +3507,9 @@ L"# Chess\n"
 "* Ваш Эло "+std::to_wstring(elo)+L"\n"
 "# Горячие клавиши:\n"
 "##  * Обычные:\n"
-"   * m - открывает окно выбора режима\n"
-"   * Alt-A - включает подсказки\n"
-"   * ? - показывает при включённой подсказке почему бот так пошёл ввиде делания плюс один ход как он думает произойдёт\n"
+"   * m - открывает окно выбора режима (можно и через настройки)\n"
+"   * Alt-A - включает подсказки (можно и через настройки)\n"
+"   * ? - показывает при включённой подсказке почему бот так пошёл ввиде делания плюс один ход как он думает произойдёт (или если включены цифры можно переместить мышку в клетку в которую ты хочешь посмотреть почему поставлена цифра)\n"
 "   * Control-H - вызывает это\n"
 "   * f11 - открывает в полноэкранном режиме\n"
 "##  * Более точные:\n"
@@ -2881,245 +3635,6 @@ L"# Chess\n"
         helpWindow.display();
     }
 }
-#include <functional>
-struct parametr {
-    std::wstring name;
-    std::function<std::wstring(Board&, Textures_struct&, bool, std::wstring)> action;
-};
-void drawRoundedButton(sf::RenderWindow& window, sf::FloatRect rect, float radius, sf::Color color) {
-    // Центральный и боковые прямоугольники
-    sf::RectangleShape rectX(sf::Vector2f(rect.width - 2 * radius, rect.height));
-    rectX.setPosition(rect.left + radius, rect.top);
-    rectX.setFillColor(color);
-
-    sf::RectangleShape rectY(sf::Vector2f(rect.width, rect.height - 2 * radius));
-    rectY.setPosition(rect.left, rect.top + radius);
-    rectY.setFillColor(color);
-
-    // Углы
-    sf::CircleShape circle(radius);
-    circle.setFillColor(color);
-
-    window.draw(rectX);
-    window.draw(rectY);
-
-    circle.setPosition(rect.left, rect.top);
-    window.draw(circle);
-    circle.setPosition(rect.left + rect.width - 2 * radius, rect.top);
-    window.draw(circle);
-    circle.setPosition(rect.left, rect.top + rect.height - 2 * radius);
-    window.draw(circle);
-    circle.setPosition(rect.left + rect.width - 2 * radius, rect.top + rect.height - 2 * radius);
-    window.draw(circle);
-}
-std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> save_data;
-std::unordered_map<std::wstring, std::vector<std::vector<int>>> save_settings;
-std::unordered_map<std::wstring, std::vector<std::vector<parametr>>> all_parameters;
-// 1. Функция загрузки и инициализации текста параметров
-std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> loadSettings(Board& cBoard) {
-    std::unordered_map<std::wstring, std::vector<std::vector<std::wstring>>> result;
-
-    for (const auto& [category, rows] : all_parameters) {
-        // Гарантируем размер категорий (безопасно расширяет, если структура в save_settings устарела)
-        save_settings[category].resize(rows.size());
-        result[category].resize(rows.size());
-
-        for (size_t r = 0; r < rows.size(); ++r) {
-            // Гарантируем размер колонок в ряду под текущую версию кода
-            save_settings[category][r].resize(rows[r].size(), 0);
-            result[category][r].resize(rows[r].size());
-
-            for (size_t c = 0; c < rows[r].size(); ++c) {
-                int clicks = save_settings[category][r][c];
-                
-                // Защита от поврежденных файлов сохранений с отрицательными кликами
-                if (clicks < 0) {
-                    clicks = 0;
-                    save_settings[category][r][c] = 0; // Сбрасываем в сейве на корректное значение
-                }
-
-                std::wstring current_text = rows[r][c].name;
-                
-                for (int i = 0; i < clicks; ++i) {
-                    current_text = rows[r][c].action(cBoard, Textures, true, current_text);
-                }
-                result[category][r][c] = current_text;
-            }
-        }
-    }
-    return result;
-}
-// 2. Основная функция отображения настроек
-void showSettings(Board& cBoard) {
-    // Конфигурация главного экрана (категорий)
-    const std::vector<std::vector<std::wstring>> main_menu_structure = {
-        { L"Игра", L"Графика" },
-        { L"Закрыть" }
-    };
-
-    // Создаем окно настроек
-    sf::RenderWindow window(sf::VideoMode(800, 600), "Settings", sf::Style::Titlebar | sf::Style::Close);
-    window.setFramerateLimit(60);
-
-    // Состояние меню: L"" означает главное меню категорий, иначе — имя открытой категории
-    std::wstring current_screen = L""; 
-
-    // Размеры и отступы кнопок (Minecraft style)
-    const float padding_x = 20.0f;
-    const float padding_y = 15.0f;
-    const float button_height = 40.0f;
-    const float start_y = 150.0f;
-    const float corner_radius = 5.0f;
-
-    // Цвета кнопок
-    const sf::Color normal_grey(100, 100, 100);
-    const sf::Color hover_grey(140, 140, 140);
-
-    while (window.isOpen()) {
-        sf::Event event;
-        sf::Vector2i mouse_pos = sf::Mouse::getPosition(window);
-
-        while (window.pollEvent(event)) {
-            if (event.type == sf::Event::Closed) {
-                window.close();
-            } else if (event.type == sf::Event::Resized) {
-                sf::FloatRect visibleArea(0.f, 0.f, event.size.width, event.size.height);
-                window.setView(sf::View(visibleArea));
-            }
-
-            if (event.type == sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left) {
-                sf::Vector2f click_pos(event.mouseButton.x, event.mouseButton.y);
-
-                if (current_screen == L"") {
-                    // Клик в Главном меню категорий
-                    float current_y = start_y;
-                    for (size_t r = 0; r < main_menu_structure.size(); ++r) {
-                        size_t buttons_in_row = main_menu_structure[r].size();
-                        float total_width = window.getSize().x - 2 * padding_x;
-                        float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
-
-                        for (size_t c = 0; c < buttons_in_row; ++c) {
-                            float btn_x = padding_x + c * (btn_width + padding_x);
-                            sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
-
-                            if (btn_rect.contains(click_pos)) {
-                                std::wstring selected = main_menu_structure[r][c];
-                                if (selected == L"Закрыть") {
-                                    window.close();
-                                } else {
-                                    current_screen = selected; // Переходим в категорию
-                                }
-                                break;
-                            }
-                        }
-                        current_y += button_height + padding_y;
-                    }
-                } 
-                else {
-                    // Клик внутри конкретной категории настроек
-                    auto& rows = save_data[current_screen];
-                    float current_y = start_y;
-                    bool clicked_something = false;
-
-                    for (size_t r = 0; r < rows.size(); ++r) {
-                        size_t buttons_in_row = rows[r].size();
-                        float total_width = window.getSize().x - 2 * padding_x;
-                        float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
-
-                        for (size_t c = 0; c < buttons_in_row; ++c) {
-                            float btn_x = padding_x + c * (btn_width + padding_x);
-                            sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
-
-                            if (btn_rect.contains(click_pos)) {
-                                // Нажали на параметр: увеличиваем счетчик кликов
-                                save_settings[current_screen][r][c]++;
-                                
-                                // Вызываем std::function из оригинальной структуры параметров и обновляем текст
-                                save_data[current_screen][r][c] = all_parameters[current_screen][r][c].action(cBoard, Textures, false, save_data[current_screen][r][c]);
-
-                                clicked_something = true;
-                                break;
-                            }
-                        }
-                        if (clicked_something) break;
-                        current_y += button_height + padding_y;
-                    }
-
-                    // Кнопка "Назад" внизу экрана подкатегории
-                    sf::FloatRect back_rect(window.getSize().x / 2.0f - 100.0f, window.getSize().y - 80.0f, 200.0f, button_height);
-                    if (!clicked_something && back_rect.contains(click_pos)) {
-                        current_screen = L""; // Возврат в главное меню
-                    }
-                }
-            }
-        }
-
-        window.clear(sf::Color(30, 30, 30)); // Темный фон а-ля Minecraft
-
-        // Отрисовка интерфейса
-        if (current_screen == L"") {
-            // Отрисовка главного меню категорий
-            float current_y = start_y;
-            for (size_t r = 0; r < main_menu_structure.size(); ++r) {
-                size_t buttons_in_row = main_menu_structure[r].size();
-                float total_width = window.getSize().x - 2 * padding_x;
-                float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
-
-                for (size_t c = 0; c < buttons_in_row; ++c) {
-                    float btn_x = padding_x + c * (btn_width + padding_x);
-                    sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
-
-                    // Эффект наведения мыши
-                    sf::Color current_color = btn_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
-                    drawRoundedButton(window, btn_rect, corner_radius, current_color);
-
-                    // Текст на кнопке
-                    sf::Text text(main_menu_structure[r][c], defaultFont, 20);
-                    text.setFillColor(sf::Color::White);
-                    // Центрирование текста
-                    sf::FloatRect text_bounds = text.getLocalBounds();
-                    text.setOrigin(text_bounds.left + text_bounds.width / 2.0f, text_bounds.top + text_bounds.height / 2.0f);
-                    text.setPosition(btn_rect.left + btn_rect.width / 2.0f, btn_rect.top + btn_rect.height / 2.0f);
-                    window.draw(text);
-                }
-                current_y += button_height + padding_y;
-            }
-        } else {// Отрисовка экрана выбранной категории
-            auto& rows = save_data[current_screen];
-            float current_y = start_y;
-            for (size_t r = 0; r < rows.size(); ++r) {
-                size_t buttons_in_row = rows[r].size();
-                float total_width = window.getSize().x - 2 * padding_x;
-                float btn_width = (total_width - (buttons_in_row - 1) * padding_x) / buttons_in_row;
-                for (size_t c = 0; c < buttons_in_row; ++c) {
-                    float btn_x = padding_x + c * (btn_width + padding_x);
-                    sf::FloatRect btn_rect(btn_x, current_y, btn_width, button_height);
-                    sf::Color current_color = btn_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
-                    drawRoundedButton(window, btn_rect, corner_radius, current_color);
-                    sf::Text text(rows[r][c], defaultFont, 18);
-                    text.setFillColor(sf::Color::White);
-                    sf::FloatRect text_bounds = text.getLocalBounds();
-                    text.setOrigin(text_bounds.left + text_bounds.width / 2.0f, text_bounds.top + text_bounds.height / 2.0f);
-                    text.setPosition(btn_rect.left + btn_rect.width / 2.0f, btn_rect.top + btn_rect.height / 2.0f);
-                    window.draw(text);
-                }
-                current_y += button_height + padding_y;
-            }
-            // Отрисовка кнопки "Назад"
-            sf::FloatRect back_rect(window.getSize().x / 2.0f - 100.0f, window.getSize().y - 80.0f, 200.0f, button_height);
-            sf::Color back_color = back_rect.contains(window.mapPixelToCoords(mouse_pos)) ? hover_grey : normal_grey;
-            drawRoundedButton(window, back_rect, corner_radius, back_color);
-            sf::Text back_text(L"Назад", defaultFont, 20);
-            back_text.setFillColor(sf::Color::White);
-            sf::FloatRect back_bounds = back_text.getLocalBounds();
-            back_text.setOrigin(back_bounds.left + back_bounds.width / 2.0f, back_bounds.top + back_bounds.height / 2.0f);
-            back_text.setPosition(back_rect.left + back_rect.width / 2.0f, back_rect.top + back_rect.height / 2.0f);
-            window.draw(back_text);
-        }
-        window.display();
-    }
-    save_to_file("./chess_settings.sett", save_settings);
-}
 #include <filesystem>
 #include "libs/serialize.cpp"
 int main() {
@@ -3186,7 +3701,8 @@ int main() {
                         [](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
                             t.setSmooth(!t.isSmooth());
                             return (t.isSmooth() ? L"Текстуры: Сглаженные" : L"Текстуры: Пиксельные");
-                        }
+                        },
+                        2
                     },
                     {
                         L"FPS: 30",
@@ -3215,7 +3731,8 @@ int main() {
                                 new_text = L"FPS: 30";
                             }
                             return new_text;
-                        }
+                        },
+                        4
                     }
                 } 
             }},
@@ -3262,14 +3779,16 @@ int main() {
                                 } 
                             }
                             return L"Сменить режим игры";
-                        }
+                        },
+                        0
                     },
                     {
                         L"Переворачивать экран при ходе: Выкл",
                         [](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
                             b.no_rotate_screen = !b.no_rotate_screen;
                             return std::wstring(L"Переворачивать экран при ходе: ")+(b.no_rotate_screen?L"Выкл":L"Вкл");
-                        }
+                        },
+                        2
                     }
                 },
                 {
@@ -3282,13 +3801,18 @@ int main() {
                                 b.bot_depth = 6;
                             }
                             return L"Глубина бота: "+std::to_wstring(b.bot_depth)+L" полуходов";
-                        }
+                        },
+                        6
                     }
                 },
                 {
                     {
                         L"Подсказки: Выкл",
                         [](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
+                            if (old_text==L"Подсказки: Вкл") {
+                                b.digit_hint = b.make_move_score(b.ccolor, b.bot_depth-1);
+                                return L"Подсказки: Цифровые";
+                            }
                             if (b.hint) {
                                 b.hint = std::nullopt;
                                 for (int i = b.history_hint.size()-1; i!=-1; i++) {
@@ -3296,13 +3820,32 @@ int main() {
                                     b.ccolor = !b.ccolor;
                                 }
                                 b.history_hint.clear();
+                                b.digit_hint = std::nullopt;
                             } else {
                                 b.hint = b.make_move(b.ccolor, b.bot_depth-1);
                             }
                             return std::wstring(L"Подсказки: ")+(b.hint?L"Вкл":L"Выкл");
-                        }
+                        },
+                        3
                     }
                 }
+            }},
+            { L"Отладка", {
+                {
+                    {
+                        L"Показывать думания бота (также тестирует верность отмены действея): Выкл",
+                        [&connection, &window](Board& b, Textures_struct& t, bool isLoading, std::wstring old_text) -> std::wstring {
+                            if (old_text==L"Показывать думания бота (также тестирует верность отмены действея): Выкл") {
+                                b.show_thinking_bot = true;
+                                return L"Показывать думания бота (также тестирует верность отмены действея): Вкл";
+                            } else {
+                                b.show_thinking_bot = false;
+                                return L"Показывать думания бота (также тестирует верность отмены действея): Выкл";
+                            }
+                        },
+                        2
+                    },
+                },
             }},
         };
 
@@ -3419,9 +3962,13 @@ int main() {
                     }
                 } else if (event.type==sf::Event::MouseButtonPressed && event.mouseButton.button == sf::Mouse::Left && (event.mouseButton.y>std::min(width, height) || event.mouseButton.x>std::min(width, height))) {
                     if (event.mouseButton.y>height-30) {
-                        if (event.mouseButton.x>=1 && event.mouseButton.x<=28+1 && event.mouseButton.y>=height-31 && event.mouseButton.y<=height-1) {
+                        int add_x = 0;
+                        if (width>height) {
+                            add_x += height;
+                        }
+                        if (event.mouseButton.x>=1+add_x && event.mouseButton.x<=28+1+add_x && event.mouseButton.y>=height-31 && event.mouseButton.y<=height-1) {
                             showHelp();
-                        } else if (event.mouseButton.x>=1+28+3 && event.mouseButton.x<=28+1+3+28 && event.mouseButton.y>=height-31 && event.mouseButton.y<=height-1) {
+                        } else if (event.mouseButton.x>=1+28+3+add_x && event.mouseButton.x<=28+1+3+28+add_x && event.mouseButton.y>=height-31 && event.mouseButton.y<=height-1) {
                             showSettings(cBoard);
                         }
                     } else {
