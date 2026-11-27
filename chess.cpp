@@ -74,7 +74,7 @@ struct ChessVersion {
         return {max, avg, in_development_ver};
     }
 };
-const ChessVersion currentChessVer = {5, 0, 0, 0};
+const ChessVersion currentChessVer = {5, 0, 1, 0};
 // --- Универсальное объявление интерфейсов Windows UPnP для Clang и GCC ---
 struct IStaticPortMapping : public IDispatch {
     virtual HRESULT STDMETHODCALLTYPE get_ExternalPort(long *pVal) = 0;
@@ -1067,7 +1067,7 @@ struct full_step {
     std::pair<uint8_t, uint8_t> to_cell;
     std::pair<uint8_t, uint8_t> prev_cell_capture;
     bool is_en_passant;
-    std::pair<bool, bool> old_can_castling_op;
+    std::pair<bool, bool> old_can_castling_cp;
 };
 struct Board {
     Array2D<figure, 8, 8> board;
@@ -1142,10 +1142,8 @@ struct Board {
             add_stepif(x + 1, y + 1, ); // Назад-вправо
             // Ходы рокировки
             if (x==3 && y==(mcolor?0:7) && !check_pic(mcolor, x, y)) {
-                // std::cout << "hello" << std::endl;
                 figure mking = board(x, y);
                 board(x, y).type.value = figureType::Empty.value;
-                // std::cout << can_castling_cp.first << std::endl;
                 if (can_castling_cp.first==true && board(x-2, y).type.value==figureType::Empty.value && board(x-1, y).type.value==figureType::Empty.value && !check_pic(mcolor, x-1, y)) {
                     steps.emplace_back(x-2, y);
                 }
@@ -1477,9 +1475,9 @@ struct Board {
         } else {
             ceil_capture = {255, 255};
         }
-        std::pair<uint8_t, uint8_t> old_can_castling_op = can_castling_cp;
+        std::pair<uint8_t, uint8_t> old_can_castling_cp = can_castling_cp;
         can_castling_cp = can_castling_op;
-        can_castling_op = old_can_castling_op;
+        can_castling_op = old_can_castling_cp;
         if (mf.type==figureType::King) {
             if (step.first==1 && can_castling_op.first) {
                 figure rook_f = board(0, pos.second);
@@ -1501,7 +1499,7 @@ struct Board {
                 can_castling_op.second = false;
             }
         }
-        return {{mf, af}, {{pos, step}, {{pceil_capture, old_can_castling_op}, use_capture}}};
+        return {{mf, af}, {{pos, step}, {{pceil_capture, old_can_castling_cp}, use_capture}}};
     }
     /*
     Par:
@@ -1527,35 +1525,32 @@ data.second.second.second:data.is_en_passant
         } else {
             ceil_capture = {255, 255};
         }
-        std::pair<uint8_t, uint8_t> old = can_castling_op;
-        can_castling_op = can_castling_cp;
-        can_castling_cp = old;
         if (data.first.first.type==figureType::King) {
-            if (data.second.second.first==1 && can_castling_op.first) {
+            if (data.second.second.first==1 && can_castling_cp.first) {
                 figure rook_f = board(0, data.second.first.second);
                 board(0, data.second.first.second).type.value = figureType::Empty.value;
                 board(2, data.second.first.second) = rook_f;
-            } else if (data.second.second.first==5 && can_castling_op.second) {
+            } else if (data.second.second.first==5 && can_castling_cp.second) {
                 figure rook_f = board(7, data.second.first.second);
                 board(7, data.second.first.second).type.value = figureType::Empty.value;
                 board(4, data.second.first.second) = rook_f;
             }
         }
         if (data.first.first.type==figureType::King) {
-            can_castling_op = {false, false};
+            can_castling_cp = {false, false};
         }
         if (data.first.first.type==figureType::Rook) {
             if (data.second.first.first==0) {
-                can_castling_op.first = false;
+                can_castling_cp.first = false;
             } else if (data.second.first.first==7) {
-                can_castling_op.second = false;
+                can_castling_cp.second = false;
             }
         }
+        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        can_castling_cp = can_castling_op;
+        can_castling_op = old;
     }
     void take_a_step(full_step data) {
-        std::pair<uint8_t, uint8_t> old = can_castling_op;
-        can_castling_op = can_castling_cp;
-        can_castling_cp = old;
         board(data.to_cell.first, data.to_cell.second) = data.resulting_figure;
         board(data.from_cell.first, data.from_cell.second).type = figureType::Empty;
         if (data.moving_figure.type==figureType::Pawn && data.from_cell.first!=data.to_cell.first && data.to_cell.first==ceil_capture.first && data.to_cell.second==ceil_capture.second) {
@@ -1570,26 +1565,29 @@ data.second.second.second:data.is_en_passant
             ceil_capture = {255, 255};
         }
         if (data.moving_figure.type==figureType::King) {
-            if (data.to_cell.first==1 && can_castling_op.first) {
+            if (data.to_cell.first==1 && can_castling_cp.first) {
                 figure rook_f = board(0, data.from_cell.second);
                 board(0, data.from_cell.second).type.value = figureType::Empty.value;
                 board(2, data.from_cell.second) = rook_f;
-            } else if (data.to_cell.first==5 && can_castling_op.second) {
+            } else if (data.to_cell.first==5 && can_castling_cp.second) {
                 figure rook_f = board(7, data.from_cell.second);
                 board(7, data.from_cell.second).type.value = figureType::Empty.value;
                 board(4, data.from_cell.second) = rook_f;
             }
         }
         if (data.moving_figure.type==figureType::King) {
-            can_castling_op = {false, false};
+            can_castling_cp = {false, false};
         }
         if (data.moving_figure.type==figureType::Rook) {
             if (data.from_cell.first==0) {
-                can_castling_op.first = false;
+                can_castling_cp.first = false;
             } else if (data.from_cell.first==7) {
-                can_castling_op.second = false;
+                can_castling_cp.second = false;
             }
         }
+        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        can_castling_cp = can_castling_op;
+        can_castling_op = old;
     }
     void take_a_step_anim(std::pair<std::pair<figure, std::pair<figure, figure>>, std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>> data) {
         board(data.second.second.first, data.second.second.second) = data.first.second.second;
@@ -1605,16 +1603,13 @@ data.second.second.second:data.is_en_passant
         } else {
             ceil_capture = {255, 255};
         }
-        std::pair<uint8_t, uint8_t> old = can_castling_op;
-        can_castling_op = can_castling_cp;
-        can_castling_cp = old;
         if (data.first.first.type==figureType::King) {
-            if (data.second.second.first==1 && can_castling_op.first) {
+            if (data.second.second.first==1 && can_castling_cp.first) {
                 figure rook_f = board(0, data.second.first.second);
                 board(0, data.second.first.second).type.value = figureType::Empty.value;
                 board(2, data.second.first.second) = rook_f;
                 animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{0, data.second.first.second}, std::pair<uint8_t, uint8_t>{2, data.second.first.second});
-            } else if (data.second.second.first==5 && can_castling_op.second) {
+            } else if (data.second.second.first==5 && can_castling_cp.second) {
                 figure rook_f = board(7, data.second.first.second);
                 board(7, data.second.first.second).type.value = figureType::Empty.value;
                 board(4, data.second.first.second) = rook_f;
@@ -1622,15 +1617,18 @@ data.second.second.second:data.is_en_passant
             }
         }
         if (data.first.first.type==figureType::King) {
-            can_castling_op = {false, false};
+            can_castling_cp = {false, false};
         }
         if (data.first.first.type==figureType::Rook) {
             if (data.second.first.first==0) {
-                can_castling_op.first = false;
+                can_castling_cp.first = false;
             } else if (data.second.first.first==7) {
-                can_castling_op.second = false;
+                can_castling_cp.second = false;
             }
         }
+        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        can_castling_cp = can_castling_op;
+        can_castling_op = old;
         animations.emplace_back(0.3, data.second.first, data.second.second);
     }
     void take_a_step_anim(full_step data) {
@@ -1647,16 +1645,13 @@ data.second.second.second:data.is_en_passant
         } else {
             ceil_capture = {255, 255};
         }
-        std::pair<uint8_t, uint8_t> old = can_castling_op;
-        can_castling_op = can_castling_cp;
-        can_castling_cp = old;
         if (data.moving_figure.type==figureType::King) {
-            if (data.to_cell.first==1 && can_castling_op.first) {
+            if (data.to_cell.first==1 && can_castling_cp.first) {
                 figure rook_f = board(0, data.from_cell.second);
                 board(0, data.from_cell.second).type.value = figureType::Empty.value;
                 board(2, data.from_cell.second) = rook_f;
                 animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{0, data.from_cell.second}, std::pair<uint8_t, uint8_t>{2, data.from_cell.second});
-            } else if (data.to_cell.first==5 && can_castling_op.second) {
+            } else if (data.to_cell.first==5 && can_castling_cp.second) {
                 figure rook_f = board(7, data.from_cell.second);
                 board(7, data.from_cell.second).type.value = figureType::Empty.value;
                 board(4, data.from_cell.second) = rook_f;
@@ -1664,21 +1659,21 @@ data.second.second.second:data.is_en_passant
             }
         }
         if (data.moving_figure.type==figureType::King) {
-            can_castling_op = {false, false};
+            can_castling_cp = {false, false};
         }
         if (data.moving_figure.type==figureType::Rook) {
             if (data.from_cell.first==0) {
-                can_castling_op.first = false;
+                can_castling_cp.first = false;
             } else if (data.from_cell.first==7) {
-                can_castling_op.second = false;
+                can_castling_cp.second = false;
             }
         }
+        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        can_castling_cp = can_castling_op;
+        can_castling_op = old;
         animations.emplace_back(0.3, data.from_cell, data.to_cell);
     }
     void take_a_step_anim(std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, figure> data) {
-        std::pair<uint8_t, uint8_t> old = can_castling_op;
-        can_castling_op = can_castling_cp;
-        can_castling_cp = old;
         board(data.first.second.first, data.first.second.second) = data.second;
         board(data.first.first.first, data.first.first.second).type = figureType::Empty;
         if (data.second.type==figureType::Pawn && data.first.first.first!=data.first.second.first && data.first.second.first==ceil_capture.first && data.first.second.second==ceil_capture.second) {
@@ -1693,12 +1688,12 @@ data.second.second.second:data.is_en_passant
             ceil_capture = {255, 255};
         }
         if (data.second.type==figureType::King) {
-            if (data.first.second.first==1 && can_castling_op.first) {
+            if (data.first.second.first==1 && can_castling_cp.first) {
                 figure rook_f = board(0, data.first.first.second);
                 board(0, data.first.first.second).type.value = figureType::Empty.value;
                 board(2, data.first.first.second) = rook_f;
                 animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{0, data.first.first.second}, std::pair<uint8_t, uint8_t>{2, data.first.first.second});
-            } else if (data.first.second.first==5 && can_castling_op.second) {
+            } else if (data.first.second.first==5 && can_castling_cp.second) {
                 figure rook_f = board(7, data.first.first.second);
                 board(7, data.first.first.second).type.value = figureType::Empty.value;
                 board(4, data.first.first.second) = rook_f;
@@ -1706,42 +1701,44 @@ data.second.second.second:data.is_en_passant
             }
         }
         if (data.second.type==figureType::King) {
-            can_castling_op = {false, false};
+            can_castling_cp = {false, false};
         }
         if (data.second.type==figureType::Rook) {
             if (data.first.first.first==0) {
-                can_castling_op.first = false;
+                can_castling_cp.first = false;
             } else if (data.first.first.first==7) {
-                can_castling_op.second = false;
+                can_castling_cp.second = false;
             }
         }
+        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        can_castling_cp = can_castling_op;
+        can_castling_op = old;
         animations.emplace_back(0.3, data.first.first, data.first.second);
     }
     void untake_a_step(std::pair<std::pair<figure, figure>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, std::pair<std::pair<std::pair<uint8_t, uint8_t>, std::pair<uint8_t, uint8_t>>, bool>>> data) {
-        board(data.second.first.first.first, data.second.first.first.second) = data.first.first; // перемещяем фигуру которая передвигалась
-        board(data.second.first.second.first, data.second.first.second.second) = data.first.second; // создаём съединую фигуру/пустое поле
+        if (data.first.first.type==figureType::King) {
+            std::pair<uint8_t, uint8_t> history_castling = data.second.second.first.second;
+            if (data.second.first.second.first==1 && history_castling.first) {
+                figure rook_f = board(2, data.second.first.first.second);
+                board(2, data.second.first.first.second).type.value = figureType::Empty.value;
+                board(0, data.second.first.first.second) = rook_f;
+            } else if (data.second.first.second.first==5 && history_castling.second) {
+                figure rook_f = board(4, data.second.first.first.second);
+                board(4, data.second.first.first.second).type.value = figureType::Empty.value;
+                board(7, data.second.first.first.second) = rook_f;
+            }
+        }
+        board(data.second.first.first.first, data.second.first.first.second) = data.first.first; 
+        board(data.second.first.second.first, data.second.first.second.second) = data.first.second; 
         ceil_capture = data.second.second.first.first;
         if (data.second.second.second) {
             int step = (data.first.first.getColor()?-1:1);
             board(data.second.first.second.first, data.second.first.second.second+step).type = figureType::Pawn;
             board(data.second.first.second.first, data.second.first.second.second+step).setColor(!data.first.first.getColor());
         }
-        std::pair<uint8_t, uint8_t> old = can_castling_cp;
+        std::pair<uint8_t, uint8_t> next_depth_op_rights = can_castling_cp;
         can_castling_cp = data.second.second.first.second;
-        can_castling_op = old;
-        if (data.first.first.type==figureType::King) {
-            if (data.second.first.second.first==1 && can_castling_cp.first) {
-                figure rook_f = board(2, data.second.first.first.second);
-                board(2, data.second.first.first.second).type.value = figureType::Empty.value;
-                board(0, data.second.first.first.second) = rook_f;
-                //animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{2, data.second.first.first.second}, std::pair<uint8_t, uint8_t>{0, data.second.first.first.second});
-            } else if (data.second.first.second.first==5 && can_castling_cp.second) {
-                figure rook_f = board(4, data.second.first.first.second);
-                board(4, data.second.first.first.second).type.value = figureType::Empty.value;
-                board(7, data.second.first.first.second) = rook_f;
-                //animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{4, data.second.first.first.second}, std::pair<uint8_t, uint8_t>{7, data.second.first.first.second});
-            }
-        }
+        can_castling_op = next_depth_op_rights;
     }
     void untake_a_step(full_step data) {
         board(data.from_cell.first, data.from_cell.second) = data.moving_figure; // перемещяем фигуру которая передвигалась
@@ -1752,22 +1749,21 @@ data.second.second.second:data.is_en_passant
             board(data.to_cell.first, data.to_cell.second+step).type = figureType::Pawn;
             board(data.to_cell.first, data.to_cell.second+step).setColor(!data.moving_figure.getColor());
         }
-        std::pair<uint8_t, uint8_t> old = can_castling_cp;
-        can_castling_cp = data.old_can_castling_op;
-        can_castling_op = old;
         if (data.moving_figure.type==figureType::King) {
-            if (data.to_cell.first==1 && can_castling_op.first) {
+            if (data.to_cell.first==1 && data.old_can_castling_cp.first) {
                 figure rook_f = board(2, data.from_cell.second);
                 board(2, data.from_cell.second).type.value = figureType::Empty.value;
                 board(0, data.from_cell.second) = rook_f;
                 //animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{2, data.from_cell.second}, std::pair<uint8_t, uint8_t>{0, data.from_cell.second});
-            } else if (data.to_cell.first==5 && can_castling_op.second) {
+            } else if (data.to_cell.first==5 && data.old_can_castling_cp.second) {
                 figure rook_f = board(4, data.from_cell.second);
                 board(4, data.from_cell.second).type.value = figureType::Empty.value;
                 board(7, data.from_cell.second) = rook_f;
                 //animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{4, data.from_cell.second}, std::pair<uint8_t, uint8_t>{7, data.from_cell.second});
             }
         }
+        can_castling_op = can_castling_cp;
+        can_castling_cp = data.old_can_castling_cp;
     }
     void untake_a_step_anim(full_step data) {
         board(data.from_cell.first, data.from_cell.second) = data.moving_figure; // перемещяем фигуру которая передвигалась
@@ -1778,22 +1774,22 @@ data.second.second.second:data.is_en_passant
             board(data.to_cell.first, data.to_cell.second+step).type = figureType::Pawn;
             board(data.to_cell.first, data.to_cell.second+step).setColor(!data.moving_figure.getColor());
         }
-        std::pair<uint8_t, uint8_t> old = can_castling_cp;
-        can_castling_cp = data.old_can_castling_op;
-        can_castling_op = old;
         if (data.moving_figure.type==figureType::King) {
-            if (data.to_cell.first==1 && can_castling_op.first) {
+            if (data.to_cell.first==1 && data.old_can_castling_cp.first) {
                 figure rook_f = board(2, data.from_cell.second);
                 board(2, data.from_cell.second).type.value = figureType::Empty.value;
                 board(0, data.from_cell.second) = rook_f;
                 animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{2, data.from_cell.second}, std::pair<uint8_t, uint8_t>{0, data.from_cell.second});
-            } else if (data.to_cell.first==5 && can_castling_op.second) {
+            } else if (data.to_cell.first==5 && data.old_can_castling_cp.second) {
                 figure rook_f = board(4, data.from_cell.second);
                 board(4, data.from_cell.second).type.value = figureType::Empty.value;
                 board(7, data.from_cell.second) = rook_f;
                 animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{4, data.from_cell.second}, std::pair<uint8_t, uint8_t>{7, data.from_cell.second});
             }
         }
+        can_castling_op = can_castling_cp;
+        can_castling_cp = data.old_can_castling_cp;
+
         animations.emplace_back(0.3, data.to_cell, data.from_cell);
     }
     int check_end(bool color) { // 0 - нет. 1 - мат. 2 - ничья
@@ -1868,6 +1864,20 @@ data.second.second.second:data.is_en_passant
     //     }
     //     return false;
     // }
+    std::pair<int, int> find_king(bool ccolor) {
+        int king_x = -1, king_y = -1;
+        for (int cy = 0; cy < 8; cy++) {
+            for (int cx = 0; cx < 8; cx++) {
+                if (board(cx, cy).type == figureType::King && board(cx, cy).getColor() == ccolor) {
+                    king_x = cx;
+                    king_y = cy;
+                    break;
+                }
+            }
+            if (king_x != -1) break;
+        }
+        return {king_x, king_y};
+    }
     bool check_pic(bool ccolor) {
         int king_x = -1, king_y = -1;
         for (int cy = 0; cy < 8; cy++) {
@@ -2306,16 +2316,13 @@ data.second.second.second:data.is_en_passant
                                     } else {
                                         ceil_capture = {255, 255};
                                     }
-                                    std::pair<uint8_t, uint8_t> old = can_castling_op;
-                                    can_castling_op = can_castling_cp;
-                                    can_castling_cp = old;
                                     if (data.moving_figure.type==figureType::King) {
-                                        if (data.to_cell.first==1 && can_castling_op.first) {
+                                        if (data.to_cell.first==1 && can_castling_cp.first) {
                                             figure rook_f = board(0, data.from_cell.second);
                                             board(0, data.from_cell.second).type.value = figureType::Empty.value;
                                             board(2, data.from_cell.second) = rook_f;
                                             animations.emplace_back(0.3, std::pair<uint8_t, uint8_t>{0, data.from_cell.second}, std::pair<uint8_t, uint8_t>{2, data.from_cell.second});
-                                        } else if (data.to_cell.first==5 && can_castling_op.second) {
+                                        } else if (data.to_cell.first==5 && can_castling_cp.second) {
                                             figure rook_f = board(7, data.from_cell.second);
                                             board(7, data.from_cell.second).type.value = figureType::Empty.value;
                                             board(4, data.from_cell.second) = rook_f;
@@ -2323,15 +2330,18 @@ data.second.second.second:data.is_en_passant
                                         }
                                     }
                                     if (data.moving_figure.type==figureType::King) {
-                                        can_castling_op = {false, false};
+                                        can_castling_cp = {false, false};
                                     }
                                     if (data.moving_figure.type==figureType::Rook) {
                                         if (data.from_cell.first==0) {
-                                            can_castling_op.first = false;
+                                            can_castling_cp.first = false;
                                         } else if (data.from_cell.first==7) {
-                                            can_castling_op.second = false;
+                                            can_castling_cp.second = false;
                                         }
                                     }
+                                    std::pair<uint8_t, uint8_t> old = can_castling_cp;
+                                    can_castling_cp = can_castling_op;
+                                    can_castling_op = old;
                                     history.insert(history.begin()+history_pos, data);
                                     history_pos++;
                                     if (connection!=nullptr) {
@@ -2403,31 +2413,31 @@ data.second.second.second:data.is_en_passant
                                             full_step bot_data = {board(bot_step.first.first.first, bot_step.first.first.second), board(bot_step.first.second.first, bot_step.first.second.second), bot_step.second, bot_step.first.first, bot_step.first.second, ceil_capture, false, can_castling_cp};
                                             board(bot_step.first.second.first, bot_step.first.second.second) = bot_step.second;
                                             board(bot_step.first.first.first, bot_step.first.first.second).type = figureType::Empty;
-                                            if (data.moving_figure.type==figureType::Pawn && data.from_cell.first!=data.to_cell.first && data.to_cell.first==ceil_capture.first && data.to_cell.second==ceil_capture.second) {
-                                                int step = (data.moving_figure.getColor()?-1:1);
+                                            if (bot_data.moving_figure.type==figureType::Pawn && bot_data.from_cell.first!=bot_data.to_cell.first && bot_data.to_cell.first==ceil_capture.first && bot_data.to_cell.second==ceil_capture.second) {
+                                                int step = (bot_data.moving_figure.getColor()?-1:1);
                                                 board(ceil_capture.first, ceil_capture.second+step).type = figureType::Empty;
                                                 data.is_en_passant = true;
                                             }
-                                            if (data.moving_figure.type==figureType::Pawn && abs(data.from_cell.second-data.to_cell.second)==2) {
+                                            if (bot_data.moving_figure.type==figureType::Pawn && abs(bot_data.from_cell.second-bot_data.to_cell.second)==2) {
                                                 ceil_capture = data.from_cell;
-                                                int step = (data.moving_figure.getColor()?-1:1);
+                                                int step = (bot_data.moving_figure.getColor()?-1:1);
                                                 ceil_capture.second-=step;
                                             } else {
                                                 ceil_capture = {255, 255};
                                             }
-                                            if (data.moving_figure.type==figureType::King) {
-                                                can_castling_op = {false, false};
+                                            if (bot_data.moving_figure.type==figureType::King) {
+                                                can_castling_cp = {false, false};
                                             }
-                                            if (data.moving_figure.type==figureType::Rook) {
-                                                if (data.from_cell.first==0) {
-                                                    can_castling_op.first = false;
-                                                } else if (data.from_cell.first==7) {
-                                                    can_castling_op.second = false;
+                                            if (bot_data.moving_figure.type==figureType::Rook) {
+                                                if (bot_data.from_cell.first==0) {
+                                                    can_castling_cp.first = false;
+                                                } else if (bot_data.from_cell.first==7) {
+                                                    can_castling_cp.second = false;
                                                 }
                                             }
-                                            std::pair<uint8_t, uint8_t> old = can_castling_op;
-                                            can_castling_op = can_castling_cp;
-                                            can_castling_cp = old;
+                                            std::pair<uint8_t, uint8_t> old = can_castling_cp;
+                                            can_castling_cp = can_castling_op;
+                                            can_castling_op = old;
 
                                             animations.emplace_back(0.3, bot_step.first.first, bot_step.first.second);
                                             // записываем в историю
@@ -3646,7 +3656,7 @@ int main() {
         sf::RenderWindow window(vidioMode, "Chess "+currentChessVer.toString());
         defaultFont.loadFromFile("C:/Windows/Fonts/arial.ttf");
         Textures.load();
-        window.setFramerateLimit(30);
+        window.setFramerateLimit(5);
         Board cBoard;
         cBoard.loadFromFileNC(L"./start.txt");
         window.clear(sf::Color::Black);
@@ -3815,7 +3825,7 @@ int main() {
                             }
                             if (b.hint) {
                                 b.hint = std::nullopt;
-                                for (int i = b.history_hint.size()-1; i!=-1; i++) {
+                                for (int i = b.history_hint.size()-1; i!=-1; i--) {
                                     b.untake_a_step(b.history_hint[i]);
                                     b.ccolor = !b.ccolor;
                                 }
